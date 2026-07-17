@@ -5,10 +5,15 @@ import json
 import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import Depends
+from sqlalchemy.orm import Session
 
+from app.db.session import get_db
 from app.db.session import SessionLocal
 from app.features.group_session.models import GroupMessage
 from .connection_manager import manager
+from .schemas import CreateSessionRequest, SessionResponse
+from .models import GroupSession
 
 router = APIRouter()
 
@@ -69,3 +74,17 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
 
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)
+        
+    
+    
+@router.post("/sessions", response_model=SessionResponse)
+def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db)):
+    session = GroupSession(
+        id=uuid.uuid4(),
+        title=payload.title,
+        created_by=payload.created_by,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session

@@ -1,0 +1,18 @@
+import uuid
+from datetime import datetime
+from pydantic import BaseModel
+
+
+class CreateSessionRequest(BaseModel):
+    title: str | None = None
+    created_by: uuid.UUID
+
+
+class SessionResponse(BaseModel):
+    id: uuid.UUID
+    title: str | None
+    created_by: uuid.UUID
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

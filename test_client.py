@@ -5,8 +5,7 @@ import websockets
 
 async def main():
     name = sys.argv[1] if len(sys.argv) > 1 else "Anonymous"
-    uri = f"ws://localhost:8001/ws/session/8e17800f-6308-47a5-8cb0-3ebff5e1fce5?display_name={name}"
-
+    uri = f"ws://localhost:8001/ws/session/a885da89-8c89-4ddd-ab25-c306d0ade719?display_name={name}"
     async with websockets.connect(uri) as ws:
         print(f"Connected as {name}. Type messages, or 'quit' to exit.")
 
