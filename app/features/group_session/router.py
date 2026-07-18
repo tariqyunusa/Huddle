@@ -1,7 +1,6 @@
 """
-Group reasoning session WebSocket endpoint — Brick 4: Redis turn-lock.
+Group reasoning session WebSocket endpoint — Brick 5: real Claude integration.
 """
-import asyncio
 import json
 import uuid
 
@@ -13,6 +12,7 @@ from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
 from .models import GroupMessage, GroupSession
 from .schemas import CreateSessionRequest, SessionResponse
+from .claude_client import build_transcript, call_claude
 
 redis_client = aioredis.from_url("redis://redis:6379", decode_responses=True)
 
@@ -88,7 +88,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                 "content": content,
             })
 
-            # Acquire per-session lock before "processing" (stand-in for Claude call)
+            # Acquire per-session lock before calling Claude
             lock_key = f"group_session_lock:{session_id}"
             lock = redis_client.lock(lock_key, timeout=LOCK_TIMEOUT_SECONDS)
             got_lock = await lock.acquire(blocking=True, blocking_timeout=LOCK_TIMEOUT_SECONDS)
@@ -98,11 +98,40 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
 
             try:
                 await manager.broadcast(session_id, {"type": "thinking"})
-                await asyncio.sleep(2)  # stand-in for the real Claude call, Brick 5
+
+                db = SessionLocal()
+                try:
+                    history = (
+                        db.query(GroupMessage)
+                        .filter(GroupMessage.session_id == session_id)
+                        .order_by(GroupMessage.created_at)
+                        .all()
+                    )
+                    transcript = build_transcript(history)
+                finally:
+                    db.close()
+
+                reply_text = await call_claude(transcript)
+
+                db = SessionLocal()
+                try:
+                    assistant_msg = GroupMessage(
+                        id=uuid.uuid4(),
+                        session_id=session_id,
+                        role="assistant",
+                        author_id=None,
+                        author_name="Claude",
+                        content=reply_text,
+                    )
+                    db.add(assistant_msg)
+                    db.commit()
+                finally:
+                    db.close()
+
                 await manager.broadcast(session_id, {
                     "type": "message",
-                    "author": "System",
-                    "content": f"(simulated response to: {content})",
+                    "author": "Claude",
+                    "content": reply_text,
                 })
             finally:
                 await lock.release()
