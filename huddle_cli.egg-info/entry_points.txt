@@ -1,0 +1,2 @@
+[console_scripts]
+huddle = huddle_cli.cli:main

@@ -1,0 +1,9 @@
+pyproject.toml
+huddle_cli/___init__.py
+huddle_cli/cli.py
+huddle_cli.egg-info/PKG-INFO
+huddle_cli.egg-info/SOURCES.txt
+huddle_cli.egg-info/dependency_links.txt
+huddle_cli.egg-info/entry_points.txt
+huddle_cli.egg-info/requires.txt
+huddle_cli.egg-info/top_level.txt
