@@ -22,7 +22,10 @@ def main():
 @click.option("--created-by", required=True, help="Your user UUID")
 def create(host, port, title, created_by):
     """Create a new session and print its ID."""
-    url = f"http://{host}:{port}/sessions"
+    scheme = "http" if host in ("localhost", "127.0.0.1") else "https"
+    port_part = f":{port}" if scheme == "http" else ""
+    url = f"{scheme}://{host}{port_part}/sessions"
+
     response = httpx.post(url, json={"title": title, "created_by": created_by})
     response.raise_for_status()
     data = response.json()
@@ -41,7 +44,9 @@ def join(session_id, host, port, name):
 
 
 async def _join(session_id, host, port, name):
-    uri = f"ws://{host}:{port}/ws/session/{session_id}?display_name={name}"
+    scheme = "ws" if host in ("localhost", "127.0.0.1") else "wss"
+    port_part = f":{port}" if scheme == "ws" else ""
+    uri = f"{scheme}://{host}{port_part}/ws/session/{session_id}?display_name={name}"
 
     async with websockets.connect(uri) as ws:
         click.echo(f"Connected as {name}. Type messages, or 'quit' to exit.")
@@ -51,7 +56,7 @@ async def _join(session_id, host, port, name):
                 data = json.loads(message)
                 msg_type = data.get("type")
                 if msg_type == "thinking":
-                    print("\n[...thinking...]\n> ", end="")
+                    print("\n[Talon is thinking...]\n> ", end="")
                 elif msg_type == "error":
                     print(f"\n[Error]: {data.get('content')}\n> ", end="")
                 else:

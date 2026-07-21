@@ -120,7 +120,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                         session_id=session_id,
                         role="assistant",
                         author_id=None,
-                        author_name="Claude",
+                        author_name="Talon",
                         content=reply_text,
                     )
                     db.add(assistant_msg)
@@ -130,7 +130,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
 
                 await manager.broadcast(session_id, {
                     "type": "message",
-                    "author": "Claude",
+                    "author": "Talon",
                     "content": reply_text,
                 })
             finally:
