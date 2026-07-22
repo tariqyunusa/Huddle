@@ -76,3 +76,21 @@ async def _join(session_id, host, port, name):
 
 if __name__ == "__main__":
     main()
+    
+    
+@main.command()
+@click.option("--host", default="localhost", help="Server host")
+@click.option("--port", default=8001, help="Server port")
+@click.option("--email", required=True)
+@click.option("--name", required=True, help="Display name")
+def signup(host, port, email, name):
+    """Create a new user and print their ID."""
+    scheme = "http" if host in ("localhost", "127.0.0.1") else "https"
+    port_part = f":{port}" if scheme == "http" else ""
+    url = f"{scheme}://{host}{port_part}/users"
+
+    response = httpx.post(url, json={"email": email, "display_name": name})
+    response.raise_for_status()
+    data = response.json()
+    click.echo(f"User created: {data['id']}")
+    click.echo(f"Use this as --created-by when creating sessions.")
