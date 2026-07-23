@@ -12,17 +12,19 @@ Huddle is hosted — there's no local setup required to use it. The only prerequ
 
 ### 1. Install `uv` (one-time, per machine)
 
+**Mac/Linux:**
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh     # Mac/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+**Windows (PowerShell):**
 ```powershell
-irm https://astral.sh/uv/install.ps1 | iex          # Windows
+irm https://astral.sh/uv/install.ps1 | iex
 ```
 
-Confirm it installed:
-```bash
-uv --version
+**Windows (Command Prompt / cmd.exe):**
+```cmd
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
 ### 2. Sign up
