@@ -3,6 +3,7 @@ Group reasoning session WebSocket endpoint — Brick 5: real Claude integration.
 """
 import json
 import uuid
+import os
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -14,7 +15,7 @@ from .models import GroupMessage, GroupSession
 from .schemas import CreateSessionRequest, SessionResponse
 from .claude_client import build_transcript, call_claude
 
-redis_client = aioredis.from_url("redis://redis:6379", decode_responses=True)
+redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
 router = APIRouter()
 
