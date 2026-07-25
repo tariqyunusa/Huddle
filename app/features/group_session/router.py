@@ -8,10 +8,11 @@ import os
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
+from typing import List
 
 from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
-from .models import GroupMessage, GroupSession
+from .models import GroupMessage, GroupSession, GroupParticipant
 from .schemas import CreateSessionRequest, SessionResponse
 from .claude_client import build_transcript, call_claude
 
@@ -35,11 +36,55 @@ def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db))
     return session
 
 
+@router.get("/sessions", response_model=List[SessionResponse])
+def list_sessions(created_by: uuid.UUID, db: Session = Depends(get_db)):
+    participant_session_ids = (
+        db.query(GroupParticipant.session_id)
+        .filter(GroupParticipant.user_id == created_by)
+        .subquery()
+    )
+    sessions = (
+        db.query(GroupSession)
+        .filter(
+            (GroupSession.created_by == created_by)
+            | (GroupSession.id.in_(participant_session_ids))
+        )
+        .order_by(GroupSession.created_at.desc())
+        .all()
+    )
+    return sessions
+
+
 @router.websocket("/ws/session/{session_id}")
 async def group_session_ws(websocket: WebSocket, session_id: str):
     display_name = websocket.query_params.get("display_name", "Anonymous")
+    user_id = websocket.query_params.get("user_id")
 
     await manager.connect(session_id, websocket)
+
+    # Record participation (if this user hasn't joined this session before)
+    if user_id:
+        db = SessionLocal()
+        try:
+            existing = (
+                db.query(GroupParticipant)
+                .filter(
+                    GroupParticipant.session_id == session_id,
+                    GroupParticipant.user_id == user_id,
+                )
+                .first()
+            )
+            if not existing:
+                participant = GroupParticipant(
+                    id=uuid.uuid4(),
+                    session_id=session_id,
+                    user_id=user_id,
+                    display_name=display_name,
+                )
+                db.add(participant)
+                db.commit()
+        finally:
+            db.close()
 
     # Replay history to the newly connected client
     db = SessionLocal()
@@ -74,7 +119,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     id=uuid.uuid4(),
                     session_id=session_id,
                     role="user",
-                    author_id=None,
+                    author_id=user_id,
                     author_name=display_name,
                     content=content,
                 )
