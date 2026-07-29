@@ -16,3 +16,10 @@ class SessionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        
+class ParticipantResponse(BaseModel):
+    user_id: uuid.UUID
+    display_name: str
+
+    class Config:
+        from_attributes = True

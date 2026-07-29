@@ -13,7 +13,7 @@ from typing import List
 from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
 from .models import GroupMessage, GroupSession, GroupParticipant
-from .schemas import CreateSessionRequest, SessionResponse
+from .schemas import CreateSessionRequest, SessionResponse, ParticipantResponse
 from .claude_client import build_transcript, call_claude
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
@@ -184,3 +184,13 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
 
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)
+        
+        
+@router.get("/sessions/{session_id}/participants", response_model=List[ParticipantResponse])
+def list_participants(session_id: uuid.UUID, db: Session = Depends(get_db)):
+    participants = (
+        db.query(GroupParticipant)
+        .filter(GroupParticipant.session_id == session_id)
+        .all()
+    )
+    return participants
