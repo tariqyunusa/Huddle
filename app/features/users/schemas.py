@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr
 class CreateUserRequest(BaseModel):
     email: EmailStr
     display_name: str
+    password: str
 
 
 class UserResponse(BaseModel):
