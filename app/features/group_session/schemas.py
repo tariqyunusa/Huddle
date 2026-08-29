@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class CreateSessionRequest(BaseModel):
     title: str | None = None
-    created_by: uuid.UUID
+   
 
 
 class SessionResponse(BaseModel):

@@ -15,6 +15,10 @@ from .connection_manager import manager
 from .models import GroupMessage, GroupSession, GroupParticipant
 from .schemas import CreateSessionRequest, SessionResponse, ParticipantResponse
 from .claude_client import build_transcript, call_claude
+from app.features.users.jwt import decode_access_token
+
+from app.features.users.dependencies import get_current_user
+from app.features.users.models import User
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
@@ -24,11 +28,11 @@ LOCK_TIMEOUT_SECONDS = 30
 
 
 @router.post("/sessions", response_model=SessionResponse)
-def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db)):
+def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     session = GroupSession(
         id=uuid.uuid4(),
         title=payload.title,
-        created_by=payload.created_by,
+        created_by=current_user.id,
     )
     db.add(session)
     db.commit()
@@ -37,16 +41,16 @@ def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db))
 
 
 @router.get("/sessions", response_model=List[SessionResponse])
-def list_sessions(created_by: uuid.UUID, db: Session = Depends(get_db)):
+def list_sessions(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     participant_session_ids = (
         db.query(GroupParticipant.session_id)
-        .filter(GroupParticipant.user_id == created_by)
+        .filter(GroupParticipant.user_id == current_user.id)
         .subquery()
     )
     sessions = (
         db.query(GroupSession)
         .filter(
-            (GroupSession.created_by == created_by)
+            (GroupSession.created_by == current_user.id)
             | (GroupSession.id.in_(participant_session_ids))
         )
         .order_by(GroupSession.created_at.desc())
@@ -57,9 +61,29 @@ def list_sessions(created_by: uuid.UUID, db: Session = Depends(get_db)):
 
 @router.websocket("/ws/session/{session_id}")
 async def group_session_ws(websocket: WebSocket, session_id: str):
-    display_name = websocket.query_params.get("display_name", "Anonymous")
-    user_id = websocket.query_params.get("user_id")
-
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001)
+        return
+    
+    try:
+        user_id = decode_access_token(token)
+    except Exception:
+        await websocket.close(code=4001)
+        return
+    
+    db = SessionLocal()
+    try:
+        current_user = db.query(User).filter(User.id == user_id).first()
+    finally:
+        db.close()
+        
+    if not current_user:
+        await websocket.close(code=4001)
+        return
+    
+    display_name = current_user.display_name
+    user_id = str(current_user.id)
     await manager.connect(session_id, websocket)
 
     # Record participation (if this user hasn't joined this session before)
@@ -187,7 +211,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
         
         
 @router.get("/sessions/{session_id}/participants", response_model=List[ParticipantResponse])
-def list_participants(session_id: uuid.UUID, db: Session = Depends(get_db)):
+def list_participants(session_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     participants = (
         db.query(GroupParticipant)
         .filter(GroupParticipant.session_id == session_id)
