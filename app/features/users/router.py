@@ -17,6 +17,10 @@ router = APIRouter()
 
 @router.post("/users", response_model=UserResponse)
 def create_user(payload: CreateUserRequest, db: Session = Depends(get_db)):
+    existing = db.query(User).filter(User.email == payload.email).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+    
     user = User(
         id=uuid.uuid4(),
         email=payload.email,
