@@ -52,6 +52,7 @@ async def generate_title(first_message: str) -> str:
     response = await client.chat.completions.create(
         model="openai/gpt-oss-120b",
         max_tokens=20,
+        extra_body={"include_reasoning": False},
         messages=[
             {
                 "role": "system",
@@ -60,4 +61,5 @@ async def generate_title(first_message: str) -> str:
             {"role": "user", "content": first_message},
         ],
     )
-    return response.choices[0].message.content.strip()
+    title = response.choices[0].message.content
+    return title.strip() if title else "Untitled session"
