@@ -23,3 +23,6 @@ class ParticipantResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        
+class UpdateSessionRequest(BaseModel):
+    title: str
