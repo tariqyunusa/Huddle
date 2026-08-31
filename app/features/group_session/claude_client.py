@@ -56,10 +56,19 @@ async def generate_title(first_message: str) -> str:
         messages=[
             {
                 "role": "system",
-                "content": "Generate a short, descriptive title (max 6 words, no quotes, no punctuation at the end) summarizing the topic of this message. Reply with only the title, nothing else.",
+                "content": (
+                    "You generate short chat titles. Read the user's message and "
+                    "produce a 3-6 word title describing its specific topic. "
+                    "Do not use generic phrases like 'New session' or 'Untitled session'. "
+                    "Reply with ONLY the title text, no quotes, no punctuation at the end.\n\n"
+                    "Example:\nMessage: 'what is innovation'\nTitle: Understanding Innovation"
+                ),
             },
             {"role": "user", "content": first_message},
         ],
     )
     title = response.choices[0].message.content
-    return title.strip() if title else "Untitled session"
+    title = title.strip() if title else ""
+    if not title or title.lower() in ("untitled session", "new session"):
+        return first_message[:40] + ("..." if len(first_message) > 40 else "")
+    return title
