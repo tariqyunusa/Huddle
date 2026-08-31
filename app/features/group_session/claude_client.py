@@ -47,3 +47,17 @@ async def call_claude(messages: List[dict]) -> str:
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
     )
     return response.choices[0].message.content
+
+async def generate_title(first_message: str) -> str:
+    response = await client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=20,
+        messages=[
+            {
+                "role": "system",
+                "content": "Generate a short, descriptive title (max 6 words, no quotes, no punctuation at the end) summarizing the topic of this message. Reply with only the title, nothing else.",
+            },
+            {"role": "user", "content": first_message},
+        ],
+    )
+    return response.choices[0].message.content.strip()

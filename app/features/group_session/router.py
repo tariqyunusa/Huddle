@@ -6,15 +6,15 @@ import uuid
 import os
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from typing import List
 
 from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
 from .models import GroupMessage, GroupSession, GroupParticipant
-from .schemas import CreateSessionRequest, SessionResponse, ParticipantResponse
-from .claude_client import build_transcript, call_claude
+from .schemas import CreateSessionRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
+from .claude_client import build_transcript, call_claude, generate_title
 from app.features.users.jwt import decode_access_token
 
 from app.features.users.dependencies import get_current_user
@@ -158,6 +158,30 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                 "content": content,
             })
 
+            # Auto-title the session on its first message
+            db = SessionLocal()
+            try:
+                message_count = (
+                    db.query(GroupMessage)
+                    .filter(GroupMessage.session_id == session_id)
+                    .count()
+                )
+                if message_count == 1:
+                    session_obj = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+                    if session_obj and (not session_obj.title or session_obj.title == "New session"):
+                        try:
+                            new_title = await generate_title(content)
+                            session_obj.title = new_title
+                            db.commit()
+                            await manager.broadcast(session_id, {
+                                "type": "session_title",
+                                "title": new_title,
+                            })
+                        except Exception:
+                            pass
+            finally:
+                db.close()
+
             # Acquire per-session lock before calling Claude
             lock_key = f"group_session_lock:{session_id}"
             lock = redis_client.lock(lock_key, timeout=LOCK_TIMEOUT_SECONDS)
@@ -209,6 +233,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)
         
+
         
 @router.get("/sessions/{session_id}/participants", response_model=List[ParticipantResponse])
 def list_participants(session_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -218,3 +243,20 @@ def list_participants(session_id: uuid.UUID, db: Session = Depends(get_db), curr
         .all()
     )
     return participants
+
+@router.patch("/sessions/{session_id}", response_model=SessionResponse)
+def update_session(
+    session_id: uuid.UUID,
+    payload: UpdateSessionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    session = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.title = payload.title
+    db.commit()
+    db.refresh(session)
+    return session
+    
+    
