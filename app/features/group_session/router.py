@@ -177,7 +177,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                                 "type": "session_title",
                                 "title": new_title,
                             })
-                        except Exception:
+                        except Exception as e:
                             print(f"TITLE GENERATION FAILED: {e}")
             finally:
                 db.close()
