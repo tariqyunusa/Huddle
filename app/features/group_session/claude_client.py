@@ -42,7 +42,7 @@ def build_transcript(messages: List[GroupMessage]) -> List[dict]:
 
 async def call_claude(messages: List[dict]) -> str:
     response = await client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         max_tokens=2000,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
     )
@@ -50,7 +50,7 @@ async def call_claude(messages: List[dict]) -> str:
 
 async def generate_title(first_message: str) -> str:
     response = await client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         max_tokens=20,
         messages=[
             {
