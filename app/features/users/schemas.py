@@ -27,3 +27,11 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     user_id: uuid.UUID
     display_name: str
+    
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+    
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+    
