@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.db.base import Base
-from app.features.users.models import User
+from app.features.users.models import User, PasswordResetToken
 from app.features.group_session.models import GroupSession, GroupParticipant, GroupMessage
 
 # this is the Alembic Config object, which provides
