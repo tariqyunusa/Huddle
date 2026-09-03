@@ -26,3 +26,7 @@ class ParticipantResponse(BaseModel):
         
 class UpdateSessionRequest(BaseModel):
     title: str
+    
+class InviteRequest(BaseModel):
+    email: str | None = None
+    user_id: uuid.UUID | None = None
