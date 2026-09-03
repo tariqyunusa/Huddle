@@ -13,10 +13,10 @@ from typing import List
 from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
 from .models import GroupMessage, GroupSession, GroupParticipant
-from .schemas import CreateSessionRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
+from .schemas import CreateSessionRequest, InviteRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
 from .claude_client import build_transcript, call_claude, generate_title
 from app.features.users.jwt import decode_access_token
-
+from app.features.users.email import send_session_invite_email
 from app.features.users.dependencies import get_current_user
 from app.features.users.models import User
 
@@ -259,4 +259,27 @@ def update_session(
     db.refresh(session)
     return session
     
+@router.post("/sessions/{session_id}/invite")
+def invite_to_session(
+    session_id: uuid.UUID,
+    payload: InviteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    session = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if payload.user_id:
+        target = db.query(User).filter(User.id == payload.user_id).first()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        target_email = target.email
+    elif payload.email:
+        target_email = payload.email
+    else:
+        raise HTTPException(status_code=400, detail="Provide an email or user_id")
+
+    send_session_invite_email(target_email, current_user.display_name, session_id, session.title)
+    return {"message": "Invite sent"}
     

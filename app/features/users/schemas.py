@@ -35,3 +35,9 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
     
+class UserSearchResult(BaseModel):
+    id: uuid.UUID
+    display_name: str
+    
+
+    

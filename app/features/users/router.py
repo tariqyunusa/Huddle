@@ -1,3 +1,4 @@
+from typing import List
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,12 +8,13 @@ from datetime import datetime, timedelta
 from app.db.session import get_db
 from app.features.users.jwt import create_access_token
 from .models import User, PasswordResetToken
-from .schemas import CreateUserRequest, ForgotPasswordRequest, LoginResponse, UserResponse, ResetPasswordRequest
+from .schemas import CreateUserRequest, ForgotPasswordRequest, LoginResponse, UserResponse, ResetPasswordRequest, UserSearchResult
 from .security import hash_password
 from .schemas import LoginRequest, LoginResponse
 from .security import verify_password
 from .jwt import create_access_token
 from .email import send_password_reset_email
+from .dependencies import get_current_user
 
 router = APIRouter()
 
@@ -85,3 +87,16 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     db.commit()
     
     return {"message": "Password has been reset successfully."}
+
+@router.get("/users/search", response_model=List[UserSearchResult])
+def search_users(query: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+     if len(query.strip()) < 2:
+         return []
+     results = (
+         db.query(User)
+         .filter(User.display_name.ilike(f"%{query}%"))
+         .filter(User.id != current_user.id)
+         .limit(10)
+         .all()
+     )
+     return results
