@@ -4,10 +4,10 @@ Expand later with password hash, email verification, etc. when you build real au
 """
 from email.policy import default
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import secrets
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.base import Base
@@ -21,6 +21,9 @@ class User(Base):
     display_name = Column(String, nullable=False)
     password_hash = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    plan = Column(String, default="free", nullable=False)
+    message_count = Column(Integer, default=0, nullable=False)
+    usage_reset_at = Column(DateTime, default=lambda: datetime.utcnow() + timedelta(days=15))
     
     
 class PasswordResetToken(Base):
