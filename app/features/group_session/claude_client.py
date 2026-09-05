@@ -20,7 +20,9 @@ SYSTEM_PROMPT = (
     "speaker individually. Use markdown tables when comparing multiple items "
     "or presenting structured data. Use Mermaid diagrams (in a ```mermaid code "
     "block) when a flowchart, sequence diagram, or process visualization would "
-    "clarify your answer."
+    "clarify your answer. In Mermaid diagrams, never use parentheses, brackets, "
+    "or special characters inside node labels — use quotes around labels "
+    "instead, e.g. A[\"Launch Ads (LinkedIn, Display)\"], or rephrase without punctuation."
 )
 
 
