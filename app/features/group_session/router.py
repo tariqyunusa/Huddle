@@ -19,6 +19,7 @@ from app.features.users.jwt import decode_access_token
 from app.features.users.email import send_session_invite_email
 from app.features.users.dependencies import get_current_user
 from app.features.users.models import User
+from app.features.users.usage import check_and_increment_usage
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
@@ -134,6 +135,20 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
             data = json.loads(raw)
             content = data.get("content", "").strip()
             if not content:
+                continue
+            
+            # Check usage limit before persisting/broadcasting
+            db = SessionLocal()
+            try:
+                allowed = check_and_increment_usage(current_user, db)
+            finally:
+                db.close()
+
+            if not allowed:
+                await manager.broadcast(session_id, {
+                    "type": "error",
+                    "content": "You've reached your free monthly message limit. Upgrade to continue.",
+                })
                 continue
 
             # Persist the user's message (unlocked — everyone's prompt lands immediately)
