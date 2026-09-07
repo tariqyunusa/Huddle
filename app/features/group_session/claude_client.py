@@ -25,15 +25,13 @@ SYSTEM_PROMPT = (
     "instead, e.g. A[\"Launch Ads (LinkedIn, Display)\"], or rephrase without punctuation."
 )
 
+MAX_HISTORY_MESSAGES = 20
+
 
 def build_transcript(messages: List[GroupMessage]) -> List[dict]:
-    """
-    Flatten the group history into a single messages array.
-    Multiple human participants get folded into 'user' turns, each line
-    prefixed with who said it. Consecutive user turns get merged.
-    """
+    recent_messages = messages[-MAX_HISTORY_MESSAGES:]
     turns: List[dict] = []
-    for m in messages:
+    for m in recent_messages:
         if m.role == "user":
             line = f"[{m.author_name}]: {m.content}"
             if turns and turns[-1]["role"] == "user":
@@ -43,7 +41,6 @@ def build_transcript(messages: List[GroupMessage]) -> List[dict]:
         else:
             turns.append({"role": "assistant", "content": m.content})
     return turns
-
 
 async def call_claude(messages: List[dict]) -> str:
     response = await client.chat.completions.create(

@@ -220,7 +220,14 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                 finally:
                     db.close()
 
-                reply_text = await call_claude(transcript)
+                try:
+                    reply_text= await call_claude(transcript)
+                except Exception as e:
+                    await manager.broadcast(session_id, {
+                        "type": "error",
+                        "content": "Talon is temporarily overloaded. Try a shorter message or wait a moment.",
+                    })
+                    continue
 
                 db = SessionLocal()
                 try:
