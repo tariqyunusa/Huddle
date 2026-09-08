@@ -23,7 +23,7 @@ SYSTEM_PROMPT = (
     "clarify your answer."
 )
 
-MAX_HISTORY_MESSAGES = 5
+MAX_HISTORY_MESSAGES = 10
 
 
 def build_transcript(messages: List[GroupMessage]) -> List[dict]:
