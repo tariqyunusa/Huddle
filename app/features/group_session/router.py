@@ -302,6 +302,30 @@ def invite_to_session(
     else:
         raise HTTPException(status_code=400, detail="Provide an email or user_id")
 
-    send_session_invite_email(target_email, current_user.display_name, session_id, session.title)
+    try:
+        send_session_invite_email(target_email, current_user.display_name, session_id, session.title)
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Email invites aren't fully set up yet - try sharing the link instead."
+        )    
     return {"message": "Invite sent"}
+
+@router.delete("/sessions/{session_id}")
+def delete_session(
+    session_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    session = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the session creator can delete it")
+
+    db.query(GroupMessage).filter(GroupMessage.session_id == session_id).delete()
+    db.query(GroupParticipant).filter(GroupParticipant.session_id == session_id).delete()
+    db.delete(session)
+    db.commit()
+    return {"message": "Session deleted"}
     
