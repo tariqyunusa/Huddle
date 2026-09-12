@@ -15,6 +15,8 @@ from .security import verify_password
 from .jwt import create_access_token
 from .email import send_password_reset_email
 from .dependencies import get_current_user
+from .email import send_verification_email
+from .models import EmailVerificationToken
 
 router = APIRouter()
 
@@ -34,6 +36,20 @@ def create_user(payload: CreateUserRequest, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+    
+    verify_token = EmailVerificationToken(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(hours=24) 
+    )
+    db.add(verify_token)
+    db.commit()
+    db.refresh(verify_token)
+    
+    try:
+        send_verification_email(user.email, verify_token.token)
+    except Exception:
+        pass
     return user
 
 @router.post("/login", response_model=LoginResponse)
@@ -49,6 +65,43 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         display_name=user.display_name,
     )
     
+@router.post("/verify-email")
+def verify_email(token: str, db: Session = Depends(get_db)):
+    record = (
+        db.query(EmailVerificationToken)
+        .filter(EmailVerificationToken.token == token)
+        .first()
+    )
+    if not record or record.used or record.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Invalid or expired verification link")
+
+    user = db.query(User).filter(User.id == record.user_id).first()
+    user.email_verified = True
+    record.used = True
+    db.commit()
+
+    return {"message": "Email verified"}
+
+@router.post("/resend-verification")
+def resend_verification(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.email_verified:
+        return {"message": "Already verified"}
+
+    verify_token = EmailVerificationToken(
+        id=uuid.uuid4(),
+        user_id=current_user.id,
+        expires_at=datetime.utcnow() + timedelta(hours=24),
+    )
+    db.add(verify_token)
+    db.commit()
+    db.refresh(verify_token)
+
+    try:
+        send_verification_email(current_user.email, verify_token.token)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Couldn't send verification email right now")
+
+    return {"message": "Verification email sent"}
 
 @router.post("/forgot-password")
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
