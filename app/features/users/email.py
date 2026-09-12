@@ -32,3 +32,16 @@ def send_session_invite_email(to_email: str, inviter_name: str, session_id, sess
             <p><a href="{join_link}">Click here to join</a></p>
         """,
     })
+    
+def send_verification_email(to_email: str, token: str):
+    verify_link = f"{FRONTEND_URL}/verify-email?token={token}"
+    resend.Emails.send({
+        "from": "Huddle <onboarding@resend.dev>",
+        "to": to_email,
+        "subject": "Verify your Huddle email",
+        "html": f"""
+            <p>Welcome to Huddle! Click below to verify your email address.</p>
+            <p><a href="{verify_link}">Verify my email</a></p>
+            <p>This link expires in 24 hours.</p>
+        """,
+    })
