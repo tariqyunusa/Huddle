@@ -60,10 +60,11 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
     token = create_access_token(str(user.id))
     return LoginResponse(
-        access_token=token,
-        user_id=user.id,
-        display_name=user.display_name,
-    )
+    access_token=token,
+    user_id=user.id,
+    display_name=user.display_name,
+    email_verified=user.email_verified,
+)
     
 @router.post("/verify-email")
 def verify_email(token: str, db: Session = Depends(get_db)):
