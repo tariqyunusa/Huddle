@@ -13,6 +13,7 @@ class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
     display_name: str
+    email_verified: bool
     created_at: datetime
 
     class Config:
@@ -27,6 +28,7 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     user_id: uuid.UUID
     display_name: str
+    email_verified: bool
     
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
