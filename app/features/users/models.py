@@ -23,8 +23,8 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     plan = Column(String, default="free", nullable=False)
     email_verified = Column(Boolean, default=False, nullable=False)
-    message_count = Column(Integer, default=0, nullable=False)
-    usage_reset_at = Column(DateTime, default=lambda: datetime.utcnow() + timedelta(days=15))
+    token_count = Column(Integer, default=0, nullable=False)
+    window_started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     
 class PasswordResetToken(Base):
