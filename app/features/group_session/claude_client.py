@@ -42,13 +42,15 @@ def build_transcript(messages: List[GroupMessage]) -> List[dict]:
             turns.append({"role": "assistant", "content": m.content})
     return turns
 
-async def call_claude(messages: List[dict]) -> str:
+async def call_claude(messages: List[dict]) -> tuple[str, int]:
     response = await client.chat.completions.create(
         model="openai/gpt-oss-120b",
         max_tokens=2000,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
     )
-    return response.choices[0].message.content
+    reply = response.choices[0].message.content
+    tokens_used = response.usage.total_tokens if response.usage else 0
+    return reply, tokens_used
 
 async def generate_title(first_message: str) -> str:
     response = await client.chat.completions.create(
