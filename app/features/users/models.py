@@ -4,7 +4,7 @@ Expand later with password hash, email verification, etc. when you build real au
 """
 from email.policy import default
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 import secrets
 
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean
