@@ -24,7 +24,7 @@ def send_session_invite_email(to_email: str, inviter_name: str, session_id, sess
     join_link = f"{FRONTEND_URL}/?session={session_id}"
     title_text = session_title or "a Huddle session"
     resend.Emails.send({
-        "from": "Huddle <noreply@tariqyunusa.xyz",
+        "from": "Huddle <onboarding@tariqyunusa.xyz>",
         "to": to_email,
         "subject": f"{inviter_name} invited you to {title_text}",
         "html": f"""
@@ -36,7 +36,7 @@ def send_session_invite_email(to_email: str, inviter_name: str, session_id, sess
 def send_verification_email(to_email: str, token: str):
     verify_link = f"{FRONTEND_URL}/verify-email?token={token}"
     resend.Emails.send({
-        "from": "Huddle <noreply@tariqyunusa.xyz",
+        "from": "Huddle <onboarding@tariqyunusa.xyz>",
         "to": to_email,
         "subject": "Verify your Huddle email",
         "html": f"""
