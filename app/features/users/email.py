@@ -3,13 +3,13 @@ import resend
 
 resend.api_key = os.environ["RESEND_API_KEY"]
 
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://huddle-dev.vercel.app/")
 
 
 def send_password_reset_email(to_email: str, token: str):
     reset_link = f"{FRONTEND_URL}/reset-password?token={token}"
     result = resend.Emails.send({
-        "from": "Huddle <noreply@tariqyunusa.xyz",
+        "from": "Huddle <onboarding@tariqyunusa.xyz>",
         "to": to_email,
         "subject": "Reset your Huddle password",
         "html": f"""
