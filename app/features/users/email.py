@@ -45,3 +45,4 @@ def send_verification_email(to_email: str, token: str):
             <p>This link expires in 24 hours.</p>
         """,
     })
+    # merge to deploy
