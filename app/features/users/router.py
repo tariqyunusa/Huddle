@@ -48,8 +48,8 @@ def create_user(payload: CreateUserRequest, db: Session = Depends(get_db)):
     
     try:
         send_verification_email(user.email, verify_token.token)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"SIGNUP VERIFICATION EMAIL FAILED: {e}")
     return user
 
 @router.post("/login", response_model=LoginResponse)
