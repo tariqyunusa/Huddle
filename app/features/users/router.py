@@ -21,6 +21,10 @@ from .models import EmailVerificationToken
 router = APIRouter()
 
 
+@router.get("/me", response_model=UserResponse)
+def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
 @router.post("/users", response_model=UserResponse)
 def create_user(payload: CreateUserRequest, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == payload.email).first()
@@ -48,8 +52,8 @@ def create_user(payload: CreateUserRequest, db: Session = Depends(get_db)):
     
     try:
         send_verification_email(user.email, verify_token.token)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"SIGNUP VERIFICATION EMAIL FAILED: {e}")
     return user
 
 @router.post("/login", response_model=LoginResponse)
