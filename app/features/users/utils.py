@@ -6,7 +6,7 @@ HERO_IMAGE_URL = "https://huddle-6j42.onrender.com/assets/images/verify_email.jp
 
 
 def build_verification_email_html(name: str, verify_link: str, expires_in_hours: int = 24) -> str:
-    font_stack = "'Satoshi','Helvetica Neue',Helvetica,Arial,sans-serif"
+    font_stack = "'Inter','Satoshi','Helvetica Neue',Helvetica,Arial,sans-serif"
     return f"""\
 <!DOCTYPE html>
 <html>
@@ -16,8 +16,8 @@ def build_verification_email_html(name: str, verify_link: str, expires_in_hours:
     <link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" />
     <!--<![endif]-->
   </head>
-  <body style="margin:0; padding:0; background-color:#F4F1E8; font-family:{font_stack};">
-    <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#F4F1E8;">
+  <body style="margin:0; padding:0; background-color:#Ffffff; font-family:{font_stack};">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#FAF8EE;">
       <tr>
         <td align="center">
           <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px; padding:40px 32px; font-family:{font_stack};">
@@ -27,7 +27,7 @@ def build_verification_email_html(name: str, verify_link: str, expires_in_hours:
               <td>
                 <table width="100%" cellpadding="0" cellspacing="0">
                   <tr>
-                    <td style="color:#03482B; font-size:20px; font-weight:bold; font-family:{font_stack};">huddle</td>
+                    <td style="color:#03482B; font-size:20px; font-weight:semi-bold; font-family:{font_stack};">huddle</td>
                     <td align="right" style="color:#03482B; font-size:12px; line-height:16px; font-family:{font_stack};">
                       Better work.<br />Common Middle ground.
                     </td>
@@ -47,13 +47,13 @@ def build_verification_email_html(name: str, verify_link: str, expires_in_hours:
             <!-- Body -->
             <tr>
               <td style="padding-top:32px;">
-                <p style="color:#03482B; font-size:12px; font-weight:bold; letter-spacing:1px; text-transform:uppercase; margin:0; font-family:{font_stack};">
+                <p style="color:#03482B; font-size:12px; font-weight:semi-bold; letter-spacing:1px; text-transform:uppercase; margin:0; font-family:{font_stack};">
                   Verify your account
                 </p>
                 <h1 style="color:#03482B; font-size:32px; line-height:1.15; font-weight:bold; margin:8px 0; font-family:{font_stack};">
                   Almost there, {name}.
                 </h1>
-                <p style="color:#03482B; font-size:15px; line-height:24px; font-family:{font_stack};">
+                <p style="color:#03482B; font-size:16px; line-height:24px; font-family:{font_stack};">
                   Thanks for joining Huddle! To get started, please confirm your email address
                   by clicking the link below. This helps us keep your account secure.
                 </p>
