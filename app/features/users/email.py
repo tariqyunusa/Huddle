@@ -1,5 +1,6 @@
 import os
 import resend
+from utils import build_verification_email_html
 
 resend.api_key = os.environ["RESEND_API_KEY"]
 
@@ -33,16 +34,12 @@ def send_session_invite_email(to_email: str, inviter_name: str, session_id, sess
         """,
     })
     
-def send_verification_email(to_email: str, token: str):
+def send_verification_email(to_email: str, token: str, name: str = "user"):
     verify_link = f"{FRONTEND_URL}/verify-email?token={token}"
     resend.Emails.send({
         "from": "Huddle <onboarding@tariqyunusa.xyz>",
         "to": to_email,
         "subject": "Verify your Huddle email",
-        "html": f"""
-            <p>Welcome to Huddle! Click below to verify your email address.</p>
-            <p><a href="{verify_link}">Verify my email</a></p>
-            <p>This link expires in 24 hours.</p>
-        """,
+        "html": build_verification_email_html(name=name, verify_link=verify_link),
     })
     # merge to deploy
