@@ -1,10 +1,10 @@
 import os
 import resend
-from utils import build_verification_email_html
+from app.features.users.utils import build_verification_email_html
 
 resend.api_key = os.environ["RESEND_API_KEY"]
 
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://huddle-dev.vercel.app/")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
 
 def send_password_reset_email(to_email: str, token: str):
