@@ -28,12 +28,24 @@ SYSTEM_PROMPT = (
     "current prices or figures, or the present state of something. Don't search "
     "for general knowledge, reasoning, or opinion questions you can already answer."
 )
-MAX_HISTORY_MESSAGES = 10
+MAX_HISTORY_MESSAGES = 20
 
 
 def build_transcript(messages: List[GroupMessage]) -> List[dict]:
+    if not messages:
+        return []
+
     recent_messages = messages[-MAX_HISTORY_MESSAGES:]
     turns: List[dict] = []
+
+    # Pin the session's opening message if it's not already in the window
+    first = messages[0]
+    if first not in recent_messages:
+        turns.append({
+            "role": "user",
+            "content": f"[Original session question] [{first.author_name}]: {first.content}"
+        })
+
     for m in recent_messages:
         if m.role == "user":
             line = f"[{m.author_name}]: {m.content}"
