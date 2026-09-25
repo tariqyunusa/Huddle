@@ -22,15 +22,30 @@ SYSTEM_PROMPT = (
     "block) when a flowchart, sequence diagram, or process visualization would "
     "clarify your answer. In Mermaid diagrams, never use parentheses, brackets, "
     "or special characters inside node labels — use quotes around labels "
-    "instead, e.g. A[\"Launch Ads (LinkedIn, Display)\"], or rephrase without punctuation."
+    "instead, e.g. A[\"Launch Ads (LinkedIn, Display)\"], or rephrase without punctuation. "
+    "You have access to a browser search tool. Use it only when the group's "
+    "question depends on current information you may not have — recent events, "
+    "current prices or figures, or the present state of something. Don't search "
+    "for general knowledge, reasoning, or opinion questions you can already answer."
 )
-
-MAX_HISTORY_MESSAGES = 10
+MAX_HISTORY_MESSAGES = 20
 
 
 def build_transcript(messages: List[GroupMessage]) -> List[dict]:
+    if not messages:
+        return []
+
     recent_messages = messages[-MAX_HISTORY_MESSAGES:]
     turns: List[dict] = []
+
+    # Pin the session's opening message if it's not already in the window
+    first = messages[0]
+    if first not in recent_messages:
+        turns.append({
+            "role": "user",
+            "content": f"[Original session question] [{first.author_name}]: {first.content}"
+        })
+
     for m in recent_messages:
         if m.role == "user":
             line = f"[{m.author_name}]: {m.content}"
@@ -42,15 +57,22 @@ def build_transcript(messages: List[GroupMessage]) -> List[dict]:
             turns.append({"role": "assistant", "content": m.content})
     return turns
 
-async def call_claude(messages: List[dict]) -> tuple[str, int]:
+async def generate_reply(messages: List[dict]) -> tuple[str, int]:
     response = await client.chat.completions.create(
         model="openai/gpt-oss-120b",
         max_tokens=2000,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        tools=[{"type": "browser_search"}],
+        tool_choice="auto"
     )
     reply = response.choices[0].message.content
     tokens_used = response.usage.total_tokens if response.usage else 0
-    return reply, tokens_used
+    
+    # Track whether this turn actually triggered a search, for usage/cost monitoring
+    executed_tools = getattr(response.choices[0].message, "executed_tools", None)
+    searched = bool(executed_tools)
+    
+    return reply, tokens_used, searched
 
 async def generate_title(first_message: str) -> str:
     response = await client.chat.completions.create(
