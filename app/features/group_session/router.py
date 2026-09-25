@@ -14,7 +14,7 @@ from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
 from .models import GroupMessage, GroupSession, GroupParticipant
 from .schemas import CreateSessionRequest, InviteRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
-from .claude_client import build_transcript, call_claude, generate_title
+from .talon import build_transcript, generate_reply, generate_title
 from app.features.users.jwt import decode_access_token
 from app.features.users.email import send_session_invite_email
 from app.features.users.dependencies import get_current_user
@@ -222,7 +222,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     db.close()
 
                 try:
-                    reply_text, tokens_used= await call_claude(transcript)
+                    reply_text, tokens_used= await generate_reply(transcript)
                 except Exception as e:
                     await manager.broadcast(session_id, {
                         "type": "error",
