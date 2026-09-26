@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from app.db.session import get_db
 from app.features.users.jwt import create_access_token
 from .models import User, PasswordResetToken
-from .schemas import CreateUserRequest, ForgotPasswordRequest, LoginResponse, UserResponse, ResetPasswordRequest, UserSearchResult
+from .schemas import CreateUserRequest, ForgotPasswordRequest, LoginResponse, UserResponse, ResetPasswordRequest, UserSearchResult, RefreshRequest
 from .security import hash_password
 from .schemas import LoginRequest, LoginResponse
 from .security import verify_password
@@ -17,6 +17,8 @@ from .email import send_password_reset_email
 from .dependencies import get_current_user
 from .email import send_verification_email
 from .models import EmailVerificationToken
+from .models import RefreshToken
+from .jwt import REFRESH_TOKEN_EXPIRE_DAYS
 
 router = APIRouter()
 
@@ -62,9 +64,21 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    token = create_access_token(str(user.id))
+    access_token = create_access_token(str(user.id))
+    
+    refresh_token = RefreshToken(
+        user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    
+    db.add(refresh_token)
+    db.commit()
+    db.refresh(refresh_token)
+    
+    
     return LoginResponse(
-    access_token=token,
+    access_token=access_token,
+    refresh_token=refresh_token.token,
     user_id=user.id,
     display_name=user.display_name,
     email_verified=user.email_verified,
@@ -158,3 +172,43 @@ def search_users(query: str, db: Session = Depends(get_db), current_user: User =
          .all()
      )
      return results
+ 
+@router.post("/refresh", response_model=LoginResponse)
+def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+    record = db.query(RefreshToken).filter(
+        RefreshToken.token == payload.refresh_token,
+        RefreshToken.revoked == False,
+        RefreshToken.expires_at > datetime.utcnow(),
+    ).first()
+    
+    if not record:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    
+    user = db.query(User).filter(User.id == record.user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    
+    record.revoked = True
+    
+    new_access_token = create_access_token(str(user.id))
+    new_refresh = RefreshToken(
+        user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    db.add(new_refresh)
+    db.commit()
+    db.refresh(new_refresh)
+    
+    return LoginResponse(
+        access_token=new_access_token,
+        refresh_token=new_refresh.token,
+        user_id=user.id,
+        display_name=user.display_name,
+        email_verified=user.email_verified,
+    )
+    
+@router.post("/logout")
+def logout(payload: RefreshRequest, db: Session = Depends(get_db)):
+    db.query(RefreshToken).filter(RefreshToken.token == payload.refresh_token).update({"revoked": True})
+    db.commit()
+    return {"message": "Logged out"}

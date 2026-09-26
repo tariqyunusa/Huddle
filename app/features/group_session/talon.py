@@ -29,7 +29,13 @@ SYSTEM_PROMPT = (
     "for general knowledge, reasoning, or opinion questions you can already answer."
 )
 MAX_HISTORY_MESSAGES = 20
+MIN_ANCHOR_LENGTH = 15  # rough heuristic for "not just a greeting"
 
+def find_session_anchor(messages: List[GroupMessage]) -> GroupMessage | None:
+    for m in messages:
+        if m.role == "user" and len(m.content.strip()) >= MIN_ANCHOR_LENGTH:
+            return m
+    return None
 
 def build_transcript(messages: List[GroupMessage]) -> List[dict]:
     if not messages:
@@ -38,12 +44,11 @@ def build_transcript(messages: List[GroupMessage]) -> List[dict]:
     recent_messages = messages[-MAX_HISTORY_MESSAGES:]
     turns: List[dict] = []
 
-    # Pin the session's opening message if it's not already in the window
-    first = messages[0]
-    if first not in recent_messages:
+    anchor = find_session_anchor(messages)
+    if anchor and anchor not in recent_messages:
         turns.append({
             "role": "user",
-            "content": f"[Original session question] [{first.author_name}]: {first.content}"
+            "content": f"[Original session question] [{anchor.author_name}]: {anchor.content}"
         })
 
     for m in recent_messages:
