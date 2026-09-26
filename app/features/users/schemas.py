@@ -28,7 +28,11 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     user_id: uuid.UUID
     display_name: str
+    refresh_token: str
     email_verified: bool
+    
+class RefreshRequest(BaseModel):
+    refresh_token: str
     
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr

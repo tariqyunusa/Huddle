@@ -222,7 +222,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     db.close()
 
                 try:
-                    reply_text, tokens_used= await generate_reply(transcript)
+                    reply_text, tokens_used, searched= await generate_reply(transcript)
                 except Exception as e:
                     await manager.broadcast(session_id, {
                         "type": "error",
@@ -237,6 +237,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                         "type": "usage",
                         "tokens_used" : new_total,
                         "tokens_limit": FREE_TIER_TOKEN_LIMIT,
+                        "searched": searched
                     })
                 finally:
                     db.close()
