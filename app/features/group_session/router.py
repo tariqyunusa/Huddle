@@ -19,7 +19,7 @@ from app.features.users.jwt import decode_access_token
 from app.features.users.email import send_session_invite_email
 from app.features.users.dependencies import get_current_user
 from app.features.users.models import User
-from app.features.users.usage import check_usage_allowed, record_usage, FREE_TIER_TOKEN_LIMIT
+from app.features.users.usage import check_usage_allowed, record_usage, PLAN_TOKEN_LIMITS
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
@@ -236,7 +236,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     await manager.broadcast(session_id, {
                         "type": "usage",
                         "tokens_used" : new_total,
-                        "tokens_limit": FREE_TIER_TOKEN_LIMIT,
+                        "tokens_limit": PLAN_TOKEN_LIMITS.get(current_user.plan, PLAN_TOKEN_LIMITS["free"]),
                         "searched": searched
                     })
                 finally:
