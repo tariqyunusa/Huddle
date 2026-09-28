@@ -85,31 +85,44 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
     
     display_name = current_user.display_name
     user_id = str(current_user.id)
-    await manager.connect(session_id, websocket)
-
-    # Record participation (if this user hasn't joined this session before)
-    if user_id:
-        db = SessionLocal()
-        try:
+    
+    db = SessionLocal()
+    try:
+        session_obj = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+        if not session_obj:
+            await websocket.close(code=4004)
+            return
+        
+        is_member = (
+            str(session_obj.created_by) == user_id
+            or db.query(GroupParticipant)
+            .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == user_id)
+            .first() is not None
+        )
+        
+        if not is_member:
+            await websocket.close(code=4003)
+            return
+        
+        # Only auto-record participation for the creator's first connect —
+        # everyone else must already be a participant via invite.
+        if str(session_obj.created_by) == user_id:
             existing = (
                 db.query(GroupParticipant)
-                .filter(
-                    GroupParticipant.session_id == session_id,
-                    GroupParticipant.user_id == user_id,
-                )
+                .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == user.id)
                 .first()
             )
             if not existing:
-                participant = GroupParticipant(
+                db.add(GroupParticipant(
                     id=uuid.uuid4(),
                     session_id=session_id,
                     user_id=user_id,
                     display_name=display_name,
-                )
-                db.add(participant)
+                ))
                 db.commit()
-        finally:
-            db.close()
+    finally:
+        db.close()
+    await manager.connect(session_id, websocket)
 
     # Replay history to the newly connected client
     db = SessionLocal()
@@ -295,6 +308,7 @@ def update_session(
     return session
     
 @router.post("/sessions/{session_id}/invite")
+@router.post("/sessions/{session_id}/invite")
 def invite_to_session(
     session_id: uuid.UUID,
     payload: InviteRequest,
@@ -305,13 +319,37 @@ def invite_to_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    is_member = (
+        session.created_by == current_user.id
+        or db.query(GroupParticipant)
+            .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == current_user.id)
+            .first() is not None
+    )
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Only session members can invite others")
+
     if payload.user_id:
         target = db.query(User).filter(User.id == payload.user_id).first()
         if not target:
             raise HTTPException(status_code=404, detail="User not found")
         target_email = target.email
+
+        existing = (
+            db.query(GroupParticipant)
+            .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == target.id)
+            .first()
+        )
+        if not existing:
+            db.add(GroupParticipant(
+                id=uuid.uuid4(),
+                session_id=session_id,
+                user_id=target.id,
+                display_name=target.display_name,
+            ))
+            db.commit()
     elif payload.email:
         target_email = payload.email
+        # No account yet — can't pre-authorize a join. See note below.
     else:
         raise HTTPException(status_code=400, detail="Provide an email or user_id")
 
@@ -321,7 +359,7 @@ def invite_to_session(
         raise HTTPException(
             status_code=503,
             detail="Email invites aren't fully set up yet - try sharing the link instead."
-        )    
+        )
     return {"message": "Invite sent"}
 
 @router.delete("/sessions/{session_id}")
