@@ -1,7 +1,7 @@
 from typing import List
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 
@@ -19,6 +19,8 @@ from .email import send_verification_email
 from .models import EmailVerificationToken
 from .models import RefreshToken
 from .jwt import REFRESH_TOKEN_EXPIRE_DAYS
+from .rate_limit import rate_limit, client_ip
+
 
 router = APIRouter()
 
@@ -28,7 +30,8 @@ def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 @router.post("/users", response_model=UserResponse)
-def create_user(payload: CreateUserRequest, db: Session = Depends(get_db)):
+def create_user(payload: CreateUserRequest, request:Request, db: Session = Depends(get_db)):
+    rate_limit("signup-ip", client_ip(request), 10, 3600)
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=409, detail="An account with this email already exists")
@@ -59,7 +62,9 @@ def create_user(payload: CreateUserRequest, db: Session = Depends(get_db)):
     return user
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    rate_limit("login-ip", client_ip(request), 20, 60)
+    rate_limit("login-email", payload.email.lower(), 10, 900)
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -103,6 +108,7 @@ def verify_email(token: str, db: Session = Depends(get_db)):
 
 @router.post("/resend-verification")
 def resend_verification(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rate_limit("resend-user", str(current_user.id), 3, 3600)
     if current_user.email_verified:
         return {"message": "Already verified"}
 
@@ -123,7 +129,10 @@ def resend_verification(current_user: User = Depends(get_current_user), db: Sess
     return {"message": "Verification email sent"}
 
 @router.post("/forgot-password")
-def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+def forgot_password(payload: ForgotPasswordRequest, request: Request,  db: Session = Depends(get_db)):
+    rate_limit("forgot-ip", client_ip(request), 5, 3600)
+    rate_limit("forgot-email", payload.email.lower(), 3, 3600)
+    
     user = db.query(User).filter(User.email == payload.email).first()
     if user:
         reset_token = PasswordResetToken(
