@@ -90,7 +90,8 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
 )
     
 @router.post("/verify-email")
-def verify_email(token: str, db: Session = Depends(get_db)):
+def verify_email(token: str, request: Request, db: Session = Depends(get_db)):
+    rate_limit("verify-ip", client_ip(request), 20, 3600)
     record = (
         db.query(EmailVerificationToken)
         .filter(EmailVerificationToken.token == token)
@@ -148,7 +149,8 @@ def forgot_password(payload: ForgotPasswordRequest, request: Request,  db: Sessi
     return{"message": "if that email exists, a reset link has been sent."}
 
 @router.post("/reset-password")
-def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+def reset_password(payload: ResetPasswordRequest, request: Request, db: Session = Depends(get_db)):
+    rate_limit("reset-ip", client_ip(request), 20, 3600)
     reset_token = db.query(PasswordResetToken).filter(
         PasswordResetToken.token == payload.token,
         PasswordResetToken.expires_at > datetime.utcnow(),
@@ -183,7 +185,8 @@ def search_users(query: str, db: Session = Depends(get_db), current_user: User =
      return results
  
 @router.post("/refresh", response_model=LoginResponse)
-def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get_db)):
+    rate_limit("refresh-ip", client_ip(request), 60, 3600)
     record = db.query(RefreshToken).filter(
         RefreshToken.token == payload.refresh_token,
         RefreshToken.revoked == False,
