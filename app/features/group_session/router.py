@@ -109,7 +109,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
         if str(session_obj.created_by) == user_id:
             existing = (
                 db.query(GroupParticipant)
-                .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == user.id)
+                .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == user_id)
                 .first()
             )
             if not existing:
