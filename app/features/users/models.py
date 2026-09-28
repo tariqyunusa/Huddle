@@ -2,7 +2,7 @@
 Minimal user model — just enough to anchor auth-related FKs.
 Expand later with password hash, email verification, etc. when you build real auth.
 """
-from email.policy import default
+
 import uuid
 from datetime import datetime
 import secrets
@@ -47,4 +47,13 @@ class EmailVerificationToken(Base):
     token = Column(String, unique=True, nullable=False, default=lambda: secrets.token_urlsafe(32))
     expires_at = Column(DateTime, nullable=False)
     used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)

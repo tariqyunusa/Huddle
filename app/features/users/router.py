@@ -1,14 +1,14 @@
 from typing import List
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 
 from app.db.session import get_db
 from app.features.users.jwt import create_access_token
 from .models import User, PasswordResetToken
-from .schemas import CreateUserRequest, ForgotPasswordRequest, LoginResponse, UserResponse, ResetPasswordRequest, UserSearchResult
+from .schemas import CreateUserRequest, ForgotPasswordRequest, LoginResponse, UserResponse, ResetPasswordRequest, UserSearchResult, RefreshRequest
 from .security import hash_password
 from .schemas import LoginRequest, LoginResponse
 from .security import verify_password
@@ -17,6 +17,10 @@ from .email import send_password_reset_email
 from .dependencies import get_current_user
 from .email import send_verification_email
 from .models import EmailVerificationToken
+from .models import RefreshToken
+from .jwt import REFRESH_TOKEN_EXPIRE_DAYS
+from .rate_limit import rate_limit, client_ip
+
 
 router = APIRouter()
 
@@ -26,7 +30,8 @@ def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 @router.post("/users", response_model=UserResponse)
-def create_user(payload: CreateUserRequest, db: Session = Depends(get_db)):
+def create_user(payload: CreateUserRequest, request:Request, db: Session = Depends(get_db)):
+    rate_limit("signup-ip", client_ip(request), 10, 3600)
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=409, detail="An account with this email already exists")
@@ -57,14 +62,28 @@ def create_user(payload: CreateUserRequest, db: Session = Depends(get_db)):
     return user
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    rate_limit("login-ip", client_ip(request), 20, 60)
+    rate_limit("login-email", payload.email.lower(), 10, 900)
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    token = create_access_token(str(user.id))
+    access_token = create_access_token(str(user.id))
+    
+    refresh_token = RefreshToken(
+        user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    
+    db.add(refresh_token)
+    db.commit()
+    db.refresh(refresh_token)
+    
+    
     return LoginResponse(
-    access_token=token,
+    access_token=access_token,
+    refresh_token=refresh_token.token,
     user_id=user.id,
     display_name=user.display_name,
     email_verified=user.email_verified,
@@ -89,6 +108,7 @@ def verify_email(token: str, db: Session = Depends(get_db)):
 
 @router.post("/resend-verification")
 def resend_verification(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rate_limit("resend-user", str(current_user.id), 3, 3600)
     if current_user.email_verified:
         return {"message": "Already verified"}
 
@@ -109,7 +129,10 @@ def resend_verification(current_user: User = Depends(get_current_user), db: Sess
     return {"message": "Verification email sent"}
 
 @router.post("/forgot-password")
-def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+def forgot_password(payload: ForgotPasswordRequest, request: Request,  db: Session = Depends(get_db)):
+    rate_limit("forgot-ip", client_ip(request), 5, 3600)
+    rate_limit("forgot-email", payload.email.lower(), 3, 3600)
+    
     user = db.query(User).filter(User.email == payload.email).first()
     if user:
         reset_token = PasswordResetToken(
@@ -158,3 +181,43 @@ def search_users(query: str, db: Session = Depends(get_db), current_user: User =
          .all()
      )
      return results
+ 
+@router.post("/refresh", response_model=LoginResponse)
+def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+    record = db.query(RefreshToken).filter(
+        RefreshToken.token == payload.refresh_token,
+        RefreshToken.revoked == False,
+        RefreshToken.expires_at > datetime.utcnow(),
+    ).first()
+    
+    if not record:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    
+    user = db.query(User).filter(User.id == record.user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    
+    record.revoked = True
+    
+    new_access_token = create_access_token(str(user.id))
+    new_refresh = RefreshToken(
+        user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    db.add(new_refresh)
+    db.commit()
+    db.refresh(new_refresh)
+    
+    return LoginResponse(
+        access_token=new_access_token,
+        refresh_token=new_refresh.token,
+        user_id=user.id,
+        display_name=user.display_name,
+        email_verified=user.email_verified,
+    )
+    
+@router.post("/logout")
+def logout(payload: RefreshRequest, db: Session = Depends(get_db)):
+    db.query(RefreshToken).filter(RefreshToken.token == payload.refresh_token).update({"revoked": True})
+    db.commit()
+    return {"message": "Logged out"}

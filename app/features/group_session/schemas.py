@@ -8,6 +8,7 @@ class CreateSessionRequest(BaseModel):
    
 
 
+
 class SessionResponse(BaseModel):
     id: uuid.UUID
     title: str | None
