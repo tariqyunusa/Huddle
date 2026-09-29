@@ -20,6 +20,7 @@ from .models import EmailVerificationToken
 from .models import RefreshToken
 from .jwt import REFRESH_TOKEN_EXPIRE_DAYS
 from .rate_limit import rate_limit, client_ip
+from .tokens import generate_refresh_token, hash_token
 
 
 router = APIRouter()
@@ -71,8 +72,10 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
 
     access_token = create_access_token(str(user.id))
     
+    raw_refresh_token = generate_refresh_token()
     refresh_token = RefreshToken(
         user_id=user.id,
+        token=hash_token(raw_refresh_token),
         expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
     )
     
@@ -83,7 +86,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     
     return LoginResponse(
     access_token=access_token,
-    refresh_token=refresh_token.token,
+    refresh_token=raw_refresh_token,
     user_id=user.id,
     display_name=user.display_name,
     email_verified=user.email_verified,
@@ -190,8 +193,9 @@ def search_users(query: str, db: Session = Depends(get_db), current_user: User =
 @router.post("/refresh", response_model=LoginResponse)
 def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get_db)):
     rate_limit("refresh-ip", client_ip(request), 60, 3600)
+    
     record = db.query(RefreshToken).filter(
-        RefreshToken.token == payload.refresh_token,
+        RefreshToken.token == hash_token(payload.refresh_token),
         RefreshToken.revoked == False,
         RefreshToken.expires_at > datetime.utcnow(),
     ).first()
@@ -206,8 +210,10 @@ def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get
     record.revoked = True
     
     new_access_token = create_access_token(str(user.id))
+    raw_new_refresh = generate_refresh_token()
     new_refresh = RefreshToken(
         user_id=user.id,
+        token=hash_token(raw_new_refresh),
         expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
     )
     db.add(new_refresh)
@@ -216,7 +222,7 @@ def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get
     
     return LoginResponse(
         access_token=new_access_token,
-        refresh_token=new_refresh.token,
+        refresh_token=raw_new_refresh,
         user_id=user.id,
         display_name=user.display_name,
         email_verified=user.email_verified,
@@ -224,6 +230,6 @@ def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get
     
 @router.post("/logout")
 def logout(payload: RefreshRequest, db: Session = Depends(get_db)):
-    db.query(RefreshToken).filter(RefreshToken.token == payload.refresh_token).update({"revoked": True})
+    db.query(RefreshToken).filter(RefreshToken.token == hash_token(payload.refresh_token)).update({"revoked": True})
     db.commit()
     return {"message": "Logged out"}
