@@ -17,7 +17,7 @@ from .schemas import CreateSessionRequest, InviteRequest, SessionResponse, Parti
 from .talon import build_transcript, generate_reply, generate_title
 from app.features.users.jwt import decode_access_token
 from app.features.users.email import send_session_invite_email
-from app.features.users.dependencies import get_current_user
+from app.features.users.dependencies import get_current_user, get_verified_user
 from app.features.users.models import User
 from app.features.users.usage import check_usage_allowed, record_usage, PLAN_TOKEN_LIMITS
 
@@ -29,7 +29,7 @@ LOCK_TIMEOUT_SECONDS = 30
 
 
 @router.post("/sessions", response_model=SessionResponse)
-def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db), current_user: User = Depends(get_verified_user)):
     session = GroupSession(
         id=uuid.uuid4(),
         title=payload.title,
@@ -81,6 +81,10 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
         
     if not current_user:
         await websocket.close(code=4001)
+        return
+    
+    if not current_user.email_verified:
+        await websocket.close(code=4005)
         return
     
     display_name = current_user.display_name
@@ -307,13 +311,13 @@ def update_session(
     db.refresh(session)
     return session
     
-@router.post("/sessions/{session_id}/invite")
+
 @router.post("/sessions/{session_id}/invite")
 def invite_to_session(
     session_id: uuid.UUID,
     payload: InviteRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_verified_user),
 ):
     session = db.query(GroupSession).filter(GroupSession.id == session_id).first()
     if not session:
