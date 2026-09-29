@@ -144,7 +144,10 @@ def forgot_password(payload: ForgotPasswordRequest, request: Request,  db: Sessi
         db.add(reset_token)
         db.commit()
         db.refresh(reset_token)
-        send_password_reset_email(user.email, reset_token.token)
+        try:
+            send_password_reset_email(user.email, reset_token.token)
+        except Exception as e:
+            print(f"PASSWORD RESET EMAIL FAILED: {e}")
         
     return{"message": "if that email exists, a reset link has been sent."}
 
