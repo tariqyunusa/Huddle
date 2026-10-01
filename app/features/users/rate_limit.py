@@ -3,7 +3,7 @@ import os
 import redis
 from fastapi import HTTPException, Request
 
-_r = redis.from_url(os.environ["REDIS_URL"], decode_response=True)
+_r = redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
 def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
@@ -24,6 +24,6 @@ def rate_limit(bucket: str, identifier: str, limit: int, window_seconds: int) ->
                 detail="TOO many attempts. Try again later.",
                 headers={"Retry-After": str(retry_after)},
             )
-    except redis.RedisError as e:
+    except (redis.RedisError, TypeError) as e:
         print(f"RATE LIMIT CHECK FAILED: {e}")
         
