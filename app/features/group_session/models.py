@@ -51,3 +51,13 @@ class GroupMessage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("GroupSession", back_populates="messages")
+    
+class GroupDocument(Base):
+    __tablename__ = "group_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("group_sessions.id"), nullable=False)
+    added_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    title = Column(String, nullable=False)
+    content = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
