@@ -9,10 +9,12 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from typing import List
+from fastapi.responses import StreamingResponse
 
 from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
-from .models import GroupMessage, GroupSession, GroupParticipant, GroupDocument
+from .export import generate_document_markdown, markdown_to_docx, markdown_to_pdf
+from .models import GroupMessage, GroupSession, GroupParticipant, GroupDocument, GeneratedDocument
 from .schemas import CreateSessionRequest, InviteRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
 from .talon import build_transcript, generate_reply, generate_title, build_document_context
 from app.features.users.jwt import decode_access_token
@@ -277,13 +279,39 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     transcript = [{"role": "user", "content": doc_context}] + transcript
 
                 try:
-                    reply_text, tokens_used, searched= await generate_reply(transcript)
+                    reply_text, tokens_used, searched, doc_request = await generate_reply(transcript)
                 except Exception as e:
                     await manager.broadcast(session_id, {
                         "type": "error",
                         "content": "Talon is temporarily overloaded. Try a shorter message or wait a moment.",
                     })
                     continue
+                
+                if doc_request:
+                    db = SessionLocal()
+                    try:
+                        record_usage(current_user.id, tokens_used, db)
+                        markdown_text, doc_tokens = await generate_document_markdown(transcript, doc_request["instructions"])
+                        record_usage(current_user.id, doc_tokens, db)
+                        doc_record = GeneratedDocument(
+                            id=uuid.uuid4(),
+                            session_id=session_id,
+                            title=doc_request["title"],
+                            markdown_content=markdown_text,
+                        )
+                        db.add(doc_record)
+                        db.commit()
+                        db.refresh(doc_record)
+                    finally:
+                        db.close()
+                        
+                    await manager.broadcast(session_id, {
+                        "type": "document_ready",
+                        "title": doc_request["title"],
+                        "document_id": str(doc_record.id),
+                    })
+                    continue
+                        
 
                 db = SessionLocal()
                 try:
@@ -422,4 +450,58 @@ def delete_session(
     db.delete(session)
     db.commit()
     return {"message": "Session deleted"}
+
+
+@router.post("/sessions/{session_id}/export")
+async def export_session(
+    session_id: uuid.UUID,
+    format: str,  # "docx" or "pdf"
+    instructions: str = "Summarize the key points and decisions from this discussion.",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_verified_user),
+):
+    if format not in ("docx", "pdf"):
+        raise HTTPException(status_code=400, detail="format must be 'docx' or 'pdf'")
+
+    session = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    is_member = (
+        session.created_by == current_user.id
+        or db.query(GroupParticipant)
+            .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == current_user.id)
+            .first() is not None
+    )
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Not a member of this session")
+
+    allowed = check_usage_allowed(current_user.id, db)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Usage limit reached")
+
+    history = (
+        db.query(GroupMessage)
+        .filter(GroupMessage.session_id == session_id)
+        .order_by(GroupMessage.created_at)
+        .all()
+    )
+    transcript = build_transcript(history)
+
+    markdown_text = await generate_document_markdown(transcript, instructions)
+
+    if format == "docx":
+        file_buffer = markdown_to_docx(markdown_text)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = f"{session.title or 'session'}.docx"
+    else:
+        file_buffer = markdown_to_pdf(markdown_text)
+        media_type = "application/pdf"
+        filename = f"{session.title or 'session'}.pdf"
+
+    return StreamingResponse(
+        file_buffer,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
     
