@@ -61,3 +61,14 @@ class GroupDocument(Base):
     title = Column(String, nullable=False)
     content = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+class GeneratedDocument(Base):
+    __tablename__ = "generated_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("group_sessions.id"), nullable=False)
+    title = Column(String, nullable=False)
+    markdown_content = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    

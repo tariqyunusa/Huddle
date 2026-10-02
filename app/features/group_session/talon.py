@@ -29,7 +29,30 @@ SYSTEM_PROMPT = (
     "for general knowledge, reasoning, or opinion questions you can already answer."
 )
 MAX_HISTORY_MESSAGES = 20
-MIN_ANCHOR_LENGTH = 15  # rough heuristic for "not just a greeting"
+MIN_ANCHOR_LENGTH = 15  
+
+DOCUMENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "generate_document",
+        "description": (
+            "Generate a downloadable report or document summarizing the discussion. "
+            "Call this when a participant explicitly asks for a report, write-up, "
+            "summary document, or similar deliverable, OR when you judge that the "
+            "group has reached a natural conclusion that would benefit from being "
+            "captured as a document (e.g. a decision, a plan, a set of action items). "
+            "Do not call this for a normal conversational answer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "A short title for the document."},
+                "instructions": {"type": "string", "description": "What the document should cover."},
+            },
+            "required": ["title", "instructions"],
+        },
+    },
+}
 
 def find_session_anchor(messages: List[GroupMessage]) -> GroupMessage | None:
     for m in messages:
@@ -62,22 +85,51 @@ def build_transcript(messages: List[GroupMessage]) -> List[dict]:
             turns.append({"role": "assistant", "content": m.content})
     return turns
 
-async def generate_reply(messages: List[dict]) -> tuple[str, int, bool]:
+DOCUMENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "generate_document",
+        "description": (
+            "Generate a downloadable report or document summarizing the discussion. "
+            "Call this when a participant explicitly asks for a report, write-up, "
+            "summary document, or similar deliverable, OR when you judge that the "
+            "group has reached a natural conclusion that would benefit from being "
+            "captured as a document (e.g. a decision, a plan, a set of action items). "
+            "Do not call this for a normal conversational answer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "A short title for the document."},
+                "instructions": {"type": "string", "description": "What the document should cover."},
+            },
+            "required": ["title", "instructions"],
+        },
+    },
+}
+
+async def generate_reply(messages: List[dict]) -> tuple[str | None, int, bool, dict | None]:
     response = await client.chat.completions.create(
         model="openai/gpt-oss-120b",
         max_tokens=2000,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-        tools=[{"type": "browser_search"}],
+        tools=[{"type": "browser_search"}, DOCUMENT_TOOL],
         tool_choice="auto"
     )
-    reply = response.choices[0].message.content
+    message = response.choices[0].message
     tokens_used = response.usage.total_tokens if response.usage else 0
-    
-    # Track whether this turn actually triggered a search, for usage/cost monitoring
-    executed_tools = getattr(response.choices[0].message, "executed_tools", None)
+
+    # Check if Talon decided to generate a document instead of replying normally
+    if message.tool_calls:
+        for call in message.tool_calls:
+            if call.function.name == "generate_document":
+                import json
+                args = json.loads(call.function.arguments)
+                return None, tokens_used, False, args  # no text reply — doc request instead
+
+    executed_tools = getattr(message, "executed_tools", None)
     searched = bool(executed_tools)
-    
-    return reply, tokens_used, searched
+    return message.content, tokens_used, searched, None
 
 async def generate_title(first_message: str) -> str:
     response = await client.chat.completions.create(
