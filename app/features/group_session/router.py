@@ -12,9 +12,9 @@ from typing import List
 
 from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
-from .models import GroupMessage, GroupSession, GroupParticipant
+from .models import GroupMessage, GroupSession, GroupParticipant, GroupDocument
 from .schemas import CreateSessionRequest, InviteRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
-from .talon import build_transcript, generate_reply, generate_title
+from .talon import build_transcript, generate_reply, generate_title, build_document_context
 from app.features.users.jwt import decode_access_token
 from app.features.users.email import send_session_invite_email
 from app.features.users.dependencies import get_current_user, get_verified_user
@@ -150,6 +150,34 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
         while True:
             raw = await websocket.receive_text()
             data = json.loads(raw)
+            
+            if data.get("type") == "share_document":
+                doc_title = data.get("title", "untitled document").strip() or "Untitled document"
+                doc_content = data.get("content", "").strip()
+                if not doc_content:
+                    continue
+                
+                db = SessionLocal()
+                try:
+                    doc = GroupDocument(
+                        id=uuid.uuid4(),
+                        session_id=session_id,
+                        added_by=current_user.id,
+                        title=doc_title,
+                        content=doc_content,
+                    )
+                    db.add(doc)
+                    db.commit()
+                finally:
+                    db.close()
+                    
+                await manager.broadcast(session_id, {
+                    "type": "document_shared",
+                    "title": doc_title,
+                    "shared_by": display_name,
+                })
+                continue
+            
             content = data.get("content", "").strip()
             if not content:
                 continue
@@ -234,9 +262,19 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                         .order_by(GroupMessage.created_at)
                         .all()
                     )
+                    documents= (
+                        db.query(GroupDocument)
+                        .filter(GroupDocument.session_id == session_id)
+                        .order_by(GroupDocument.created_at)
+                        .all()
+                    )
                     transcript = build_transcript(history)
                 finally:
                     db.close()
+                    
+                doc_context = build_document_context(documents)
+                if doc_context:
+                    transcript = [{"role": "user", "content": doc_context}] + transcript
 
                 try:
                     reply_text, tokens_used, searched= await generate_reply(transcript)
@@ -380,6 +418,7 @@ def delete_session(
 
     db.query(GroupMessage).filter(GroupMessage.session_id == session_id).delete()
     db.query(GroupParticipant).filter(GroupParticipant.session_id == session_id).delete()
+    db.query(GroupDocument).filter(GroupDocument.session_id == session_id).delete()
     db.delete(session)
     db.commit()
     return {"message": "Session deleted"}

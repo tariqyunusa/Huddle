@@ -6,7 +6,7 @@ from typing import List
 
 from openai import AsyncOpenAI
 
-from .models import GroupMessage
+from .models import GroupMessage, GroupDocument
 
 client = AsyncOpenAI(
     api_key=os.environ["GROQ_API_KEY"],
@@ -62,7 +62,7 @@ def build_transcript(messages: List[GroupMessage]) -> List[dict]:
             turns.append({"role": "assistant", "content": m.content})
     return turns
 
-async def generate_reply(messages: List[dict]) -> tuple[str, int]:
+async def generate_reply(messages: List[dict]) -> tuple[str, int, bool]:
     response = await client.chat.completions.create(
         model="openai/gpt-oss-120b",
         max_tokens=2000,
@@ -103,3 +103,10 @@ async def generate_title(first_message: str) -> str:
     if not title or title.lower() in ("untitled session", "new session"):
         return first_message[:40] + ("..." if len(first_message) > 40 else "")
     return title
+
+def build_document_context(documents: List["GroupDocument"]) -> str:
+    """"Formats shared documents as a labeled context block, prepended before the transcript."""
+    if not documents:
+        return ""
+    blocks = [f'[Shared document: "{doc.title}"]\n{doc.content}' for doc in documents]
+    return "\n\n".join(blocks) + "\n\n---\n\n"
