@@ -90,6 +90,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     user_id=user.id,
     display_name=user.display_name,
     email_verified=user.email_verified,
+    plan=user.plan,
 )
     
 @router.post("/verify-email")
@@ -226,6 +227,7 @@ def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get
         user_id=user.id,
         display_name=user.display_name,
         email_verified=user.email_verified,
+        plan=user.plan,
     )
     
 @router.post("/logout")
