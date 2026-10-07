@@ -24,6 +24,8 @@ class User(Base):
     plan = Column(String, default="free", nullable=False)
     paystack_customer_code = Column(String, unique=True, nullable=True)
     paystack_subscription_code = Column(String, unique=True, nullable=True)
+    bachs_customer_id = Column(String, unique=True, nullable=True)
+    bachs_subscription_id = Column(String, unique=True, nullable=True)
     email_verified = Column(Boolean, default=False, nullable=False)
     
     token_count = Column(Integer, default=0, nullable=False)
@@ -61,3 +63,10 @@ class RefreshToken(Base):
     expires_at = Column(DateTime, nullable=False)
     revoked = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BachsWebhookEvent(Base):
+    __tablename__ = "bachs_webhook_events"
+
+    event_id = Column(String, primary_key=True)
+    received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
