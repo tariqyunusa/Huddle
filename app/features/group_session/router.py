@@ -14,20 +14,89 @@ from fastapi.responses import StreamingResponse
 from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
 from .export import generate_document_markdown, markdown_to_docx, markdown_to_pdf
-from .models import GroupMessage, GroupSession, GroupParticipant, GroupDocument, GeneratedDocument
-from .schemas import CreateSessionRequest, InviteRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
+from .models import GroupMessage, GroupSession, GroupParticipant, GroupDocument, GeneratedDocument, SessionInviteLink
+from .schemas import CreateSessionRequest, InviteRequest, RedeemInviteLinkRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
 from .talon import build_transcript, generate_reply, generate_title, build_document_context
 from app.features.users.jwt import decode_access_token
 from app.features.users.email import send_session_invite_email
 from app.features.users.dependencies import get_current_user, get_verified_user
 from app.features.users.models import User
 from app.features.users.usage import check_usage_allowed, record_usage, PLAN_TOKEN_LIMITS
+from app.features.users.tokens import generate_refresh_token, hash_token
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
 router = APIRouter()
 
 LOCK_TIMEOUT_SECONDS = 30
+
+
+@router.post("/sessions/{session_id}/invite-link")
+def create_session_invite_link(
+    session_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_verified_user),
+):
+    session = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    is_member = (
+        session.created_by == current_user.id
+        or db.query(GroupParticipant)
+        .filter(
+            GroupParticipant.session_id == session_id,
+            GroupParticipant.user_id == current_user.id,
+        )
+        .first() is not None
+    )
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Only session members can invite others")
+
+    raw_token = generate_refresh_token()
+    db.add(SessionInviteLink(
+        session_id=session_id,
+        created_by=current_user.id,
+        token_hash=hash_token(raw_token),
+    ))
+    db.commit()
+    return {"token": raw_token}
+
+
+@router.post("/sessions/invite-link/redeem", response_model=SessionResponse)
+def redeem_session_invite_link(
+    payload: RedeemInviteLinkRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_verified_user),
+):
+    invite = db.query(SessionInviteLink).filter(
+        SessionInviteLink.token_hash == hash_token(payload.token)
+    ).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite link is invalid")
+
+    session = db.query(GroupSession).filter(GroupSession.id == invite.session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    is_member = (
+        session.created_by == current_user.id
+        or db.query(GroupParticipant)
+        .filter(
+            GroupParticipant.session_id == session.id,
+            GroupParticipant.user_id == current_user.id,
+        )
+        .first() is not None
+    )
+    if not is_member:
+        db.add(GroupParticipant(
+            session_id=session.id,
+            user_id=current_user.id,
+            display_name=current_user.display_name,
+        ))
+        db.commit()
+
+    return session
 
 
 @router.post("/sessions", response_model=SessionResponse)
@@ -423,8 +492,22 @@ def invite_to_session(
     else:
         raise HTTPException(status_code=400, detail="Provide an email or user_id")
 
+    raw_token = generate_refresh_token()
+    db.add(SessionInviteLink(
+        session_id=session_id,
+        created_by=current_user.id,
+        token_hash=hash_token(raw_token),
+    ))
+    db.commit()
+
     try:
-        send_session_invite_email(target_email, current_user.display_name, session_id, session.title)
+        send_session_invite_email(
+            target_email,
+            current_user.display_name,
+            session_id,
+            session.title,
+            raw_token,
+        )
     except Exception:
         raise HTTPException(
             status_code=503,
@@ -446,6 +529,7 @@ def delete_session(
 
     db.query(GroupMessage).filter(GroupMessage.session_id == session_id).delete()
     db.query(GroupParticipant).filter(GroupParticipant.session_id == session_id).delete()
+    db.query(SessionInviteLink).filter(SessionInviteLink.session_id == session_id).delete()
     db.query(GroupDocument).filter(GroupDocument.session_id == session_id).delete()
     db.delete(session)
     db.commit()
@@ -504,4 +588,3 @@ async def export_session(
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-    
