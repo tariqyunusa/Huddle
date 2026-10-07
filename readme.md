@@ -88,7 +88,7 @@ You should see three containers running: `huddle-api-1`, `huddle-db-1`, `huddle-
 First time only — apply database migrations:
 
 ```bash
-alembic upgrade head
+docker compose exec api alembic upgrade head
 ```
 
 ### 2. Install the CLI locally (editable)

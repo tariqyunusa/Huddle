@@ -31,3 +31,7 @@ class UpdateSessionRequest(BaseModel):
 class InviteRequest(BaseModel):
     email: str | None = None
     user_id: uuid.UUID | None = None
+
+
+class RedeemInviteLinkRequest(BaseModel):
+    token: str
