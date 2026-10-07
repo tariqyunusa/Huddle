@@ -119,3 +119,18 @@ huddle join <session-id> --name Alice
 | `DATABASE_URL` | `postgresql://huddle:huddle_dev_pw@db:5432/huddle` | Neon pooled connection string |
 | `REDIS_URL` | `redis://redis:6379` | Render Key Value internal URL |
 | `GROQ_API_KEY` | your Groq key | your Groq key |
+
+### Bachs subscriptions
+
+Configure the following API environment variables after creating the Standard and Pro recurring products in Bachs. `BACHS_API_BASE_URL` is optional; it defaults to the sandbox API for `sk_sandbox_` keys and the live API otherwise.
+
+| Variable | Value |
+|---|---|
+| `BACHS_API_KEY` | Bachs sandbox or live API key |
+| `BACHS_PRODUCT_STANDARD` | Bachs product ID for the Standard recurring plan |
+| `BACHS_PRODUCT_PRO` | Bachs product ID for the Pro recurring plan |
+| `BACHS_WEBHOOK_SECRET` | Signing secret for the Bachs webhook endpoint |
+| `BACHS_API_BASE_URL` | Optional API base URL override |
+| `FRONTEND_URL` | Frontend origin, without a trailing slash |
+
+Register `POST /webhooks/bachs` in the Bachs developer portal and subscribe to `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`. Run `alembic upgrade head` to add the Bachs subscription fields and webhook event ledger. Existing Paystack subscriptions are not migrated or canceled automatically; manage any active legacy subscriptions in Paystack before their next renewal to prevent duplicate billing.
