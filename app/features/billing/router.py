@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from uuid import UUID
@@ -14,6 +15,7 @@ from app.features.users.dependencies import get_verified_user
 from app.features.users.models import BachsWebhookEvent, User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 BACHS_API_KEY = os.environ["BACHS_API_KEY"]
 BACHS_WEBHOOK_SECRET = os.environ["BACHS_WEBHOOK_SECRET"]
@@ -56,12 +58,108 @@ def subscribe(
         )
         response.raise_for_status()
         checkout_url = response.json().get("checkout_url")
-    except (requests.RequestException, ValueError):
-        raise HTTPException(status_code=502, detail="Could not start subscription")
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        request_id = (
+            exc.response.headers.get("x-request-id") or exc.response.headers.get("request-id")
+            if exc.response is not None
+            else None
+        )
+        try:
+            body = exc.response.json() if exc.response is not None else {}
+        except ValueError:
+            body = {}
+        error_code = body.get("error_code") or body.get("code")
+        provider_message = body.get("detail") or body.get("message")
+        logger.warning(
+            "Bachs checkout creation failed: status=%s error_code=%s request_id=%s detail=%s",
+            status,
+            error_code,
+            request_id,
+            str(provider_message)[:300] if provider_message else None,
+        )
+        if status in (401, 403):
+            detail = "Bachs rejected checkout. Check that the configured API key is valid for this environment and has checkout access."
+        elif status == 404:
+            detail = "Bachs could not find the configured product in the selected API environment."
+        elif status == 422:
+            detail = "Bachs rejected the checkout details. Check the configured product and checkout settings."
+        elif status == 400 and provider_message:
+            detail = f"Bachs rejected checkout: {str(provider_message)[:300]}"
+        else:
+            detail = f"Bachs could not start checkout (HTTP {status or 'error'}). Try again shortly."
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except ValueError as exc:
+        logger.warning("Bachs returned invalid checkout data")
+        raise HTTPException(status_code=502, detail="Bachs returned invalid checkout data.") from exc
+    except requests.RequestException as exc:
+        logger.warning("Bachs checkout connection failed: %s: %s", type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Could not connect to Bachs to start checkout. Try again shortly.",
+        ) from exc
 
     if not checkout_url:
         raise HTTPException(status_code=502, detail="Checkout provider returned no payment link")
     return {"checkout_url": checkout_url}
+
+
+@router.get("/billing/plans")
+def get_billing_plans(current_user: User = Depends(get_verified_user)):
+    products = {}
+    for plan, product_id in PLAN_PRODUCTS.items():
+        try:
+            response = requests.get(
+                f"{BACHS_API_BASE_URL.rstrip('/')}/v1/products/{product_id}",
+                headers={"Authorization": f"Bearer {BACHS_API_KEY}"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            product = response.json()
+            price = product.get("price") or {}
+            amount = price.get("amount")
+            currency = price.get("currency")
+            if amount is None or not currency:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"The configured Bachs {plan} product has no fixed price.",
+                )
+            cycle = product.get("billing_cycle") or {}
+            products[plan] = {
+                "amount": str(amount),
+                "currency": currency,
+                "interval": cycle.get("interval"),
+                "frequency": cycle.get("frequency", 1),
+            }
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            try:
+                error_code = (exc.response.json() or {}).get("error_code") if exc.response is not None else None
+            except ValueError:
+                error_code = None
+            logger.warning(
+                "Bachs product lookup failed for plan %s: status=%s error_code=%s",
+                plan,
+                status,
+                error_code,
+            )
+            if status in (401, 403):
+                detail = "Bachs rejected the product lookup. Check the API key and its products:read permission."
+            elif status == 404:
+                detail = f"Bachs could not find the configured {plan} product ID in the selected API environment."
+            else:
+                detail = f"Bachs could not load the configured {plan} product (HTTP {status or 'error'})."
+            raise HTTPException(status_code=502, detail=detail)
+        except requests.RequestException as exc:
+            logger.warning("Bachs product lookup failed for plan %s: %s: %s", plan, type(exc).__name__, exc)
+            raise HTTPException(
+                status_code=502,
+                detail="Could not connect to Bachs to load plan prices. Try again shortly.",
+            )
+        except ValueError:
+            logger.warning("Bachs returned invalid product data for plan %s", plan)
+            raise HTTPException(status_code=502, detail="Bachs returned invalid product data.")
+    return {"plans": products}
 
 
 def _valid_bachs_signature(body: bytes, headers) -> bool:
