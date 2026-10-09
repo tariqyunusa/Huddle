@@ -24,3 +24,11 @@ def get_current_user(
         raise HTTPException(status_code=401, detail=" User not found")
     
     return user
+
+def get_verified_user(current_user: User = Depends(get_current_user)) -> User:
+    if not current_user.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your email before creating or joining sessions.",
+        )
+    return current_user

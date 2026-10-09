@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.features.group_session.router import router as group_session_router
 from app.features.users.router import router as users_router
+from app.features.billing.router import router as billing_router
 
 app = FastAPI(title="Huddle")
 
@@ -26,6 +27,7 @@ app.add_middleware(
 
 app.include_router(group_session_router)
 app.include_router(users_router)
+app.include_router(billing_router)
 
 
 @app.get("/health")

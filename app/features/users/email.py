@@ -21,8 +21,14 @@ def send_password_reset_email(to_email: str, token: str):
     })
     print(f"RESEND RESULT: {result}")
     
-def send_session_invite_email(to_email: str, inviter_name: str, session_id, session_title: str | None):
-    join_link = f"{FRONTEND_URL}/?session={session_id}"
+def send_session_invite_email(
+    to_email: str,
+    inviter_name: str,
+    session_id,
+    session_title: str | None,
+    invite_token: str,
+):
+    join_link = f"{FRONTEND_URL}/?invite={invite_token}"
     title_text = session_title or "a Huddle session"
     resend.Emails.send({
         "from": "Huddle <onboarding@tariqyunusa.xyz>",

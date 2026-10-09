@@ -9,17 +9,20 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from typing import List
+from fastapi.responses import StreamingResponse
 
 from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
-from .models import GroupMessage, GroupSession, GroupParticipant
-from .schemas import CreateSessionRequest, InviteRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
-from .talon import build_transcript, generate_reply, generate_title
+from .export import generate_document_markdown, markdown_to_docx, markdown_to_pdf
+from .models import GroupMessage, GroupSession, GroupParticipant, GroupDocument, GeneratedDocument, SessionInviteLink
+from .schemas import CreateSessionRequest, InviteRequest, RedeemInviteLinkRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
+from .talon import build_transcript, generate_reply, generate_title, build_document_context
 from app.features.users.jwt import decode_access_token
 from app.features.users.email import send_session_invite_email
-from app.features.users.dependencies import get_current_user
+from app.features.users.dependencies import get_current_user, get_verified_user
 from app.features.users.models import User
 from app.features.users.usage import check_usage_allowed, record_usage, PLAN_TOKEN_LIMITS
+from app.features.users.tokens import generate_refresh_token, hash_token
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
@@ -28,8 +31,76 @@ router = APIRouter()
 LOCK_TIMEOUT_SECONDS = 30
 
 
+@router.post("/sessions/{session_id}/invite-link")
+def create_session_invite_link(
+    session_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_verified_user),
+):
+    session = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    is_member = (
+        session.created_by == current_user.id
+        or db.query(GroupParticipant)
+        .filter(
+            GroupParticipant.session_id == session_id,
+            GroupParticipant.user_id == current_user.id,
+        )
+        .first() is not None
+    )
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Only session members can invite others")
+
+    raw_token = generate_refresh_token()
+    db.add(SessionInviteLink(
+        session_id=session_id,
+        created_by=current_user.id,
+        token_hash=hash_token(raw_token),
+    ))
+    db.commit()
+    return {"token": raw_token}
+
+
+@router.post("/sessions/invite-link/redeem", response_model=SessionResponse)
+def redeem_session_invite_link(
+    payload: RedeemInviteLinkRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_verified_user),
+):
+    invite = db.query(SessionInviteLink).filter(
+        SessionInviteLink.token_hash == hash_token(payload.token)
+    ).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite link is invalid")
+
+    session = db.query(GroupSession).filter(GroupSession.id == invite.session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    is_member = (
+        session.created_by == current_user.id
+        or db.query(GroupParticipant)
+        .filter(
+            GroupParticipant.session_id == session.id,
+            GroupParticipant.user_id == current_user.id,
+        )
+        .first() is not None
+    )
+    if not is_member:
+        db.add(GroupParticipant(
+            session_id=session.id,
+            user_id=current_user.id,
+            display_name=current_user.display_name,
+        ))
+        db.commit()
+
+    return session
+
+
 @router.post("/sessions", response_model=SessionResponse)
-def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db), current_user: User = Depends(get_verified_user)):
     session = GroupSession(
         id=uuid.uuid4(),
         title=payload.title,
@@ -83,33 +154,50 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
         await websocket.close(code=4001)
         return
     
+    if not current_user.email_verified:
+        await websocket.close(code=4005)
+        return
+    
     display_name = current_user.display_name
     user_id = str(current_user.id)
-    await manager.connect(session_id, websocket)
-
-    # Record participation (if this user hasn't joined this session before)
-    if user_id:
-        db = SessionLocal()
-        try:
+    
+    db = SessionLocal()
+    try:
+        session_obj = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+        if not session_obj:
+            await websocket.close(code=4004)
+            return
+        
+        is_member = (
+            str(session_obj.created_by) == user_id
+            or db.query(GroupParticipant)
+            .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == user_id)
+            .first() is not None
+        )
+        
+        if not is_member:
+            await websocket.close(code=4003)
+            return
+        
+        # Only auto-record participation for the creator's first connect —
+        # everyone else must already be a participant via invite.
+        if str(session_obj.created_by) == user_id:
             existing = (
                 db.query(GroupParticipant)
-                .filter(
-                    GroupParticipant.session_id == session_id,
-                    GroupParticipant.user_id == user_id,
-                )
+                .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == user_id)
                 .first()
             )
             if not existing:
-                participant = GroupParticipant(
+                db.add(GroupParticipant(
                     id=uuid.uuid4(),
                     session_id=session_id,
                     user_id=user_id,
                     display_name=display_name,
-                )
-                db.add(participant)
+                ))
                 db.commit()
-        finally:
-            db.close()
+    finally:
+        db.close()
+    await manager.connect(session_id, websocket)
 
     # Replay history to the newly connected client
     db = SessionLocal()
@@ -133,6 +221,34 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
         while True:
             raw = await websocket.receive_text()
             data = json.loads(raw)
+            
+            if data.get("type") == "share_document":
+                doc_title = data.get("title", "untitled document").strip() or "Untitled document"
+                doc_content = data.get("content", "").strip()
+                if not doc_content:
+                    continue
+                
+                db = SessionLocal()
+                try:
+                    doc = GroupDocument(
+                        id=uuid.uuid4(),
+                        session_id=session_id,
+                        added_by=current_user.id,
+                        title=doc_title,
+                        content=doc_content,
+                    )
+                    db.add(doc)
+                    db.commit()
+                finally:
+                    db.close()
+                    
+                await manager.broadcast(session_id, {
+                    "type": "document_shared",
+                    "title": doc_title,
+                    "shared_by": display_name,
+                })
+                continue
+            
             content = data.get("content", "").strip()
             if not content:
                 continue
@@ -217,18 +333,54 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                         .order_by(GroupMessage.created_at)
                         .all()
                     )
+                    documents= (
+                        db.query(GroupDocument)
+                        .filter(GroupDocument.session_id == session_id)
+                        .order_by(GroupDocument.created_at)
+                        .all()
+                    )
                     transcript = build_transcript(history)
                 finally:
                     db.close()
+                    
+                doc_context = build_document_context(documents)
+                if doc_context:
+                    transcript = [{"role": "user", "content": doc_context}] + transcript
 
                 try:
-                    reply_text, tokens_used, searched= await generate_reply(transcript)
+                    reply_text, tokens_used, searched, doc_request = await generate_reply(transcript)
                 except Exception as e:
                     await manager.broadcast(session_id, {
                         "type": "error",
                         "content": "Talon is temporarily overloaded. Try a shorter message or wait a moment.",
                     })
                     continue
+                
+                if doc_request:
+                    db = SessionLocal()
+                    try:
+                        record_usage(current_user.id, tokens_used, db)
+                        markdown_text, doc_tokens = await generate_document_markdown(transcript, doc_request["instructions"])
+                        record_usage(current_user.id, doc_tokens, db)
+                        doc_record = GeneratedDocument(
+                            id=uuid.uuid4(),
+                            session_id=session_id,
+                            title=doc_request["title"],
+                            markdown_content=markdown_text,
+                        )
+                        db.add(doc_record)
+                        db.commit()
+                        db.refresh(doc_record)
+                    finally:
+                        db.close()
+                        
+                    await manager.broadcast(session_id, {
+                        "type": "document_ready",
+                        "title": doc_request["title"],
+                        "document_id": str(doc_record.id),
+                    })
+                    continue
+                        
 
                 db = SessionLocal()
                 try:
@@ -294,34 +446,73 @@ def update_session(
     db.refresh(session)
     return session
     
+
 @router.post("/sessions/{session_id}/invite")
 def invite_to_session(
     session_id: uuid.UUID,
     payload: InviteRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_verified_user),
 ):
     session = db.query(GroupSession).filter(GroupSession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    is_member = (
+        session.created_by == current_user.id
+        or db.query(GroupParticipant)
+            .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == current_user.id)
+            .first() is not None
+    )
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Only session members can invite others")
 
     if payload.user_id:
         target = db.query(User).filter(User.id == payload.user_id).first()
         if not target:
             raise HTTPException(status_code=404, detail="User not found")
         target_email = target.email
+
+        existing = (
+            db.query(GroupParticipant)
+            .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == target.id)
+            .first()
+        )
+        if not existing:
+            db.add(GroupParticipant(
+                id=uuid.uuid4(),
+                session_id=session_id,
+                user_id=target.id,
+                display_name=target.display_name,
+            ))
+            db.commit()
     elif payload.email:
         target_email = payload.email
+        # No account yet — can't pre-authorize a join. See note below.
     else:
         raise HTTPException(status_code=400, detail="Provide an email or user_id")
 
+    raw_token = generate_refresh_token()
+    db.add(SessionInviteLink(
+        session_id=session_id,
+        created_by=current_user.id,
+        token_hash=hash_token(raw_token),
+    ))
+    db.commit()
+
     try:
-        send_session_invite_email(target_email, current_user.display_name, session_id, session.title)
+        send_session_invite_email(
+            target_email,
+            current_user.display_name,
+            session_id,
+            session.title,
+            raw_token,
+        )
     except Exception:
         raise HTTPException(
             status_code=503,
             detail="Email invites aren't fully set up yet - try sharing the link instead."
-        )    
+        )
     return {"message": "Invite sent"}
 
 @router.delete("/sessions/{session_id}")
@@ -338,7 +529,62 @@ def delete_session(
 
     db.query(GroupMessage).filter(GroupMessage.session_id == session_id).delete()
     db.query(GroupParticipant).filter(GroupParticipant.session_id == session_id).delete()
+    db.query(SessionInviteLink).filter(SessionInviteLink.session_id == session_id).delete()
+    db.query(GroupDocument).filter(GroupDocument.session_id == session_id).delete()
     db.delete(session)
     db.commit()
     return {"message": "Session deleted"}
-    
+
+
+@router.post("/sessions/{session_id}/export")
+async def export_session(
+    session_id: uuid.UUID,
+    format: str,  # "docx" or "pdf"
+    instructions: str = "Summarize the key points and decisions from this discussion.",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_verified_user),
+):
+    if format not in ("docx", "pdf"):
+        raise HTTPException(status_code=400, detail="format must be 'docx' or 'pdf'")
+
+    session = db.query(GroupSession).filter(GroupSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    is_member = (
+        session.created_by == current_user.id
+        or db.query(GroupParticipant)
+            .filter(GroupParticipant.session_id == session_id, GroupParticipant.user_id == current_user.id)
+            .first() is not None
+    )
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Not a member of this session")
+
+    allowed = check_usage_allowed(current_user.id, db)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Usage limit reached")
+
+    history = (
+        db.query(GroupMessage)
+        .filter(GroupMessage.session_id == session_id)
+        .order_by(GroupMessage.created_at)
+        .all()
+    )
+    transcript = build_transcript(history)
+
+    markdown_text = await generate_document_markdown(transcript, instructions)
+
+    if format == "docx":
+        file_buffer = markdown_to_docx(markdown_text)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = f"{session.title or 'session'}.docx"
+    else:
+        file_buffer = markdown_to_pdf(markdown_text)
+        media_type = "application/pdf"
+        filename = f"{session.title or 'session'}.pdf"
+
+    return StreamingResponse(
+        file_buffer,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

@@ -14,6 +14,7 @@ class UserResponse(BaseModel):
     email: str
     display_name: str
     email_verified: bool
+    plan: str
     created_at: datetime
 
     class Config:
@@ -30,6 +31,7 @@ class LoginResponse(BaseModel):
     display_name: str
     refresh_token: str
     email_verified: bool
+    plan: str
     
 class RefreshRequest(BaseModel):
     refresh_token: str

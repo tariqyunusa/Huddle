@@ -37,6 +37,16 @@ class GroupParticipant(Base):
     session = relationship("GroupSession", back_populates="participants")
 
 
+class SessionInviteLink(Base):
+    __tablename__ = "session_invite_links"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("group_sessions.id"), nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    token_hash = Column(String, unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class GroupMessage(Base):
     __tablename__ = "group_messages"
 
@@ -51,3 +61,22 @@ class GroupMessage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("GroupSession", back_populates="messages")
+    
+class GroupDocument(Base):
+    __tablename__ = "group_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("group_sessions.id"), nullable=False)
+    added_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    title = Column(String, nullable=False)
+    content = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+class GeneratedDocument(Base):
+    __tablename__ = "generated_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("group_sessions.id"), nullable=False)
+    title = Column(String, nullable=False)
+    markdown_content = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
