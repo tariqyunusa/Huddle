@@ -2,6 +2,7 @@
 Group reasoning session WebSocket endpoint — Brick 5: real Claude integration.
 """
 import json
+import asyncio
 import uuid
 import os
 
@@ -23,6 +24,8 @@ from app.features.users.dependencies import get_current_user, get_verified_user
 from app.features.users.models import User
 from app.features.users.usage import check_usage_allowed, record_usage, PLAN_TOKEN_LIMITS
 from app.features.users.tokens import generate_refresh_token, hash_token
+from app.features.memory.episodic import maybe_create_episode, retrieve_episodes, build_memory_context
+from app.features.memory.models import Episode
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
@@ -344,6 +347,17 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     db.close()
                     
                 doc_context = build_document_context(documents)
+                latest_user_message = next((m.content for m in reversed(history) if m.role == "user"), "")
+                live_window = history[-20:]
+                exclude_after = live_window[0].created_at if live_window else None
+                try:
+                    episodes = await retrieve_episodes(session_id, latest_user_message, exclude_after=exclude_after)
+                    memory_context = build_memory_context(episodes)
+                    if memory_context:
+                        transcript = [{"role": "user", "content": memory_context}] + transcript
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("Failed to retrieve episodic memory")
                 if doc_context:
                     transcript = [{"role": "user", "content": doc_context}] + transcript
 
@@ -416,6 +430,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                 })
             finally:
                 await lock.release()
+            asyncio.create_task(maybe_create_episode(session_id, current_user.id))
 
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)
@@ -527,6 +542,7 @@ def delete_session(
     if session.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="Only the session creator can delete it")
 
+    db.query(Episode).filter(Episode.session_id == session_id).delete()
     db.query(GroupMessage).filter(GroupMessage.session_id == session_id).delete()
     db.query(GroupParticipant).filter(GroupParticipant.session_id == session_id).delete()
     db.query(SessionInviteLink).filter(SessionInviteLink.session_id == session_id).delete()
