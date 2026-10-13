@@ -5,8 +5,11 @@ import json
 import asyncio
 import uuid
 import os
+import logging
 
 import redis.asyncio as aioredis
+from redis.exceptions import LockNotOwnedError
+from openai import APIStatusError, RateLimitError
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from typing import List
@@ -30,8 +33,9 @@ from app.features.memory.models import Episode
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-LOCK_TIMEOUT_SECONDS = 30
+LOCK_TIMEOUT_SECONDS = 90
 
 
 @router.post("/sessions/{session_id}/invite-link")
@@ -347,26 +351,64 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     db.close()
                     
                 doc_context = build_document_context(documents)
+                memory_context = ""
                 latest_user_message = next((m.content for m in reversed(history) if m.role == "user"), "")
                 live_window = history[-20:]
                 exclude_after = live_window[0].created_at if live_window else None
                 try:
-                    episodes = await retrieve_episodes(session_id, latest_user_message, exclude_after=exclude_after)
+                    episodes = await asyncio.wait_for(
+                        retrieve_episodes(session_id, latest_user_message, exclude_after=exclude_after),
+                        timeout=5,
+                    )
                     memory_context = build_memory_context(episodes)
-                    if memory_context:
-                        transcript = [{"role": "user", "content": memory_context}] + transcript
                 except Exception:
-                    import logging
-                    logging.getLogger(__name__).exception("Failed to retrieve episodic memory")
+                    logger.exception("Failed to retrieve episodic memory")
+
+                latest_user_index = next(
+                    (index for index in range(len(transcript) - 1, -1, -1) if transcript[index]["role"] == "user"),
+                    None,
+                )
+                total_chars = sum(len(message.get("content", "")) for message in transcript) + len(doc_context) + len(memory_context)
+                if total_chars > 20000:
+                    memory_context = ""
+                    total_chars = sum(len(message.get("content", "")) for message in transcript) + len(doc_context)
+                    while total_chars > 20000 and len(transcript) > 1:
+                        oldest_index = next(
+                            (index for index in range(len(transcript)) if index != latest_user_index),
+                            None,
+                        )
+                        if oldest_index is None:
+                            break
+                        transcript.pop(oldest_index)
+                        if latest_user_index is not None and oldest_index < latest_user_index:
+                            latest_user_index -= 1
+                        total_chars = sum(len(message.get("content", "")) for message in transcript) + len(doc_context)
+
+                transcript_chars = sum(len(message.get("content", "")) for message in transcript)
+                logger.info(
+                    "Talon input size (approx tokens): transcript=%d, document_context=%d, memory_context=%d",
+                    transcript_chars // 4,
+                    len(doc_context) // 4,
+                    len(memory_context) // 4,
+                )
+                final_messages = []
+                if memory_context:
+                    final_messages.append({"role": "user", "content": memory_context})
                 if doc_context:
-                    transcript = [{"role": "user", "content": doc_context}] + transcript
+                    final_messages.append({"role": "user", "content": doc_context})
+                final_messages.extend(transcript)
 
                 try:
-                    reply_text, tokens_used, searched, doc_request = await generate_reply(transcript)
+                    reply_text, tokens_used, searched, doc_request = await generate_reply(final_messages)
                 except Exception as e:
+                    logger.exception("generate_reply failed (%s): %s", type(e).__name__, e)
+                    if isinstance(e, RateLimitError) or (isinstance(e, APIStatusError) and e.status_code in (413, 429)):
+                        error_content = "Talon hit its rate limit. Wait a minute and try again."
+                    else:
+                        error_content = "Talon is temporarily overloaded. Try a shorter message or wait a moment."
                     await manager.broadcast(session_id, {
                         "type": "error",
-                        "content": "Talon is temporarily overloaded. Try a shorter message or wait a moment.",
+                        "content": error_content,
                     })
                     continue
                 
@@ -374,7 +416,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     db = SessionLocal()
                     try:
                         record_usage(current_user.id, tokens_used, db)
-                        markdown_text, doc_tokens = await generate_document_markdown(transcript, doc_request["instructions"])
+                        markdown_text, doc_tokens = await generate_document_markdown(final_messages, doc_request["instructions"])
                         record_usage(current_user.id, doc_tokens, db)
                         doc_record = GeneratedDocument(
                             id=uuid.uuid4(),
@@ -429,8 +471,13 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     "content": reply_text,
                 })
             finally:
-                await lock.release()
-            asyncio.create_task(maybe_create_episode(session_id, current_user.id))
+                try:
+                    await lock.release()
+                except LockNotOwnedError:
+                    import logging
+                    logging.getLogger(__name__).warning("Session lock expired before release for session %s", session_id)
+                finally:
+                    asyncio.create_task(maybe_create_episode(session_id, current_user.id))
 
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)

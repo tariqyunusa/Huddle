@@ -8,6 +8,7 @@ services:
       - .env
     volumes:
       - .:/app
+      - fastembed_cache:/app/.fastembed_cache
     depends_on:
       - db
       - redis
@@ -32,3 +33,4 @@ services:
 
 volumes:
   pgdata:
+  fastembed_cache:

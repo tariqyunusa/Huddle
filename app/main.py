@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +9,15 @@ from app.features.group_session.router import router as group_session_router
 from app.features.users.router import router as users_router
 from app.features.billing.router import router as billing_router
 
-app = FastAPI(title="Huddle")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.features.memory.embeddings import preload_model
+
+    await preload_model()
+    yield
+
+
+app = FastAPI(title="Huddle", lifespan=lifespan)
 
 BASE_DIR = Path(__file__).resolve().parent
 
