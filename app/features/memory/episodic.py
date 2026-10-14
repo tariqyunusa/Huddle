@@ -1,5 +1,6 @@
 import logging
 import os
+import asyncio
 from time import perf_counter
 import uuid
 from datetime import datetime
@@ -113,6 +114,13 @@ async def maybe_create_episode(session_id, triggering_user_id):
         db.commit()
         tokens = response.usage.total_tokens if response.usage else 0
         record_usage(triggering_user_id, tokens, db)
+        db.close()
+        db = None
+        from app.features.memory.semantic import EXTRACTOR_ENABLED, extract_semantic
+
+        if EXTRACTOR_ENABLED:
+            await asyncio.sleep(20)
+            await extract_semantic(session_id, included_messages, triggering_user_id)
     except RateLimitError:
         db.rollback()
         logger.warning("Episode summary rate limited for session %s", session_id)
@@ -127,7 +135,8 @@ async def maybe_create_episode(session_id, triggering_user_id):
         db.rollback()
         logger.exception("Failed to create episodic memory for session %s", session_id)
     finally:
-        db.close()
+        if db is not None:
+            db.close()
         _in_progress.discard(key)
 
 
