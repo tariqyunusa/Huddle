@@ -28,7 +28,8 @@ from app.features.users.models import User
 from app.features.users.usage import check_usage_allowed, record_usage, PLAN_TOKEN_LIMITS
 from app.features.users.tokens import generate_refresh_token, hash_token
 from app.features.memory.episodic import maybe_create_episode, retrieve_episodes, build_memory_context
-from app.features.memory.models import Episode
+from app.features.memory.models import Episode, MemoryDoc
+from app.features.memory.semantic import build_semantic_context, visible_semantic_docs
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
@@ -352,6 +353,35 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     
                 doc_context = build_document_context(documents)
                 memory_context = ""
+                semantic_context = ""
+                try:
+                    latest_human_message = next((m for m in reversed(history) if m.role == "user" and m.author_id), None)
+                    semantic_session_id = uuid.UUID(str(session_id))
+                    semantic_db = SessionLocal()
+                    try:
+                        semantic_query = semantic_db.query(MemoryDoc).filter(
+                            (MemoryDoc.scope_type == "session") & (MemoryDoc.scope_id == semantic_session_id)
+                        )
+                        if latest_human_message:
+                            semantic_query = semantic_db.query(MemoryDoc).filter(
+                                ((MemoryDoc.scope_type == "session") & (MemoryDoc.scope_id == semantic_session_id))
+                                | ((MemoryDoc.scope_type == "user") & (MemoryDoc.scope_id == latest_human_message.author_id))
+                            )
+                        semantic_docs = semantic_query.order_by(MemoryDoc.updated_at.desc()).all()
+                    finally:
+                        semantic_db.close()
+                    semantic_docs = visible_semantic_docs(
+                        semantic_docs,
+                        semantic_session_id,
+                        latest_human_message.author_id if latest_human_message else None,
+                    )
+                    if latest_human_message:
+                        for semantic_doc in semantic_docs:
+                            if semantic_doc.scope_type == "user":
+                                semantic_doc._semantic_display_name = latest_human_message.author_name
+                    semantic_context = build_semantic_context(semantic_docs)
+                except Exception:
+                    logger.exception("Failed to retrieve semantic memory")
                 latest_user_message = next((m.content for m in reversed(history) if m.role == "user"), "")
                 live_window = history[-20:]
                 exclude_after = live_window[0].created_at if live_window else None
@@ -368,10 +398,13 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     (index for index in range(len(transcript) - 1, -1, -1) if transcript[index]["role"] == "user"),
                     None,
                 )
-                total_chars = sum(len(message.get("content", "")) for message in transcript) + len(doc_context) + len(memory_context)
+                total_chars = sum(len(message.get("content", "")) for message in transcript) + len(doc_context) + len(memory_context) + len(semantic_context)
                 if total_chars > 20000:
                     memory_context = ""
-                    total_chars = sum(len(message.get("content", "")) for message in transcript) + len(doc_context)
+                    total_chars = sum(len(message.get("content", "")) for message in transcript) + len(doc_context) + len(semantic_context)
+                    if total_chars > 20000:
+                        semantic_context = ""
+                        total_chars = sum(len(message.get("content", "")) for message in transcript) + len(doc_context)
                     while total_chars > 20000 and len(transcript) > 1:
                         oldest_index = next(
                             (index for index in range(len(transcript)) if index != latest_user_index),
@@ -392,6 +425,8 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     len(memory_context) // 4,
                 )
                 final_messages = []
+                if semantic_context:
+                    final_messages.append({"role": "user", "content": semantic_context})
                 if memory_context:
                     final_messages.append({"role": "user", "content": memory_context})
                 if doc_context:
@@ -590,6 +625,7 @@ def delete_session(
         raise HTTPException(status_code=403, detail="Only the session creator can delete it")
 
     db.query(Episode).filter(Episode.session_id == session_id).delete()
+    db.query(MemoryDoc).filter(MemoryDoc.scope_type == "session", MemoryDoc.scope_id == session_id).delete()
     db.query(GroupMessage).filter(GroupMessage.session_id == session_id).delete()
     db.query(GroupParticipant).filter(GroupParticipant.session_id == session_id).delete()
     db.query(SessionInviteLink).filter(SessionInviteLink.session_id == session_id).delete()

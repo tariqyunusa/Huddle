@@ -14,7 +14,7 @@ load_dotenv()
 from app.db.base import Base
 from app.features.users.models import User, PasswordResetToken, EmailVerificationToken, RefreshToken, BachsWebhookEvent
 from app.features.group_session.models import GroupSession, GroupParticipant, GroupMessage, SessionInviteLink
-from app.features.memory.models import Episode
+from app.features.memory.models import Episode, MemoryDoc
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

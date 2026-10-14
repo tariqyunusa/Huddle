@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.features.group_session.router import router as group_session_router
 from app.features.users.router import router as users_router
 from app.features.billing.router import router as billing_router
+from app.features.memory.router import router as memory_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,6 +38,7 @@ app.add_middleware(
 app.include_router(group_session_router)
 app.include_router(users_router)
 app.include_router(billing_router)
+app.include_router(memory_router)
 
 
 @app.get("/health")

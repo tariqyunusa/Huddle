@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.base import Base
@@ -29,3 +29,23 @@ class Episode(Base):
     last_message_at = Column(DateTime, nullable=False)
     message_count = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MemoryDoc(Base):
+    __tablename__ = "memory_docs"
+    __table_args__ = (
+        UniqueConstraint("scope_type", "scope_id", "path", name="uq_memory_docs_scope_path"),
+        Index("ix_memory_docs_scope", "scope_type", "scope_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scope_type = Column(String, nullable=False)
+    scope_id = Column(UUID(as_uuid=True), nullable=False)
+    kind = Column(String, default="semantic", nullable=False)
+    path = Column(String, nullable=False)
+    description = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    version = Column(Integer, default=1, nullable=False)
+    author_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
