@@ -93,8 +93,8 @@ async def maybe_create_episode(session_id, triggering_user_id):
                 transcript += title_prefix + titles
         summary_started = perf_counter()
         response = await client.chat.completions.create(
-            model="openai/gpt-oss-120b", max_tokens=300,
-            extra_body={"include_reasoning": False},
+            model="openai/gpt-oss-120b", max_tokens=700,
+            extra_body={"include_reasoning": False, "reasoning_effort": "low"},
             messages=[
                 {"role": "system", "content": "Summarize this session segment for episodic memory. Keep decisions, open questions, who said what when it matters, and shared-document titles. Be concise and factual."},
                 {"role": "user", "content": transcript},
@@ -105,13 +105,32 @@ async def maybe_create_episode(session_id, triggering_user_id):
         if not summary:
             return
         vector = (await embed([summary]))[0]
+        semantic_messages = [
+            {
+                "id": str(message.id),
+                "role": str(message.role),
+                "author_id": str(message.author_id) if message.author_id else None,
+                "author_name": str(message.author_name),
+                "content": str(message.content or ""),
+                "created_at": message.created_at,
+            }
+            for message in included_messages
+        ]
+        first_message_at = semantic_messages[0]["created_at"]
+        last_message_at = semantic_messages[-1]["created_at"]
+        episode_message_count = len(semantic_messages)
+        messages.clear()
+        included_messages.clear()
+        latest = None
+        message = None
         episode = Episode(
             id=uuid.uuid4(), scope_type="session", scope_id=session_id, session_id=session_id,
-            summary=summary, embedding=vector, first_message_at=included_messages[0].created_at,
-            last_message_at=included_messages[-1].created_at, message_count=len(included_messages),
+            summary=summary, embedding=vector, first_message_at=first_message_at,
+            last_message_at=last_message_at, message_count=episode_message_count,
         )
         db.add(episode)
         db.commit()
+        episode = None
         tokens = response.usage.total_tokens if response.usage else 0
         record_usage(triggering_user_id, tokens, db)
         db.close()
@@ -120,19 +139,23 @@ async def maybe_create_episode(session_id, triggering_user_id):
 
         if EXTRACTOR_ENABLED:
             await asyncio.sleep(20)
-            await extract_semantic(session_id, included_messages, triggering_user_id)
+            await extract_semantic(session_id, semantic_messages, triggering_user_id)
     except RateLimitError:
-        db.rollback()
+        if db is not None:
+            db.rollback()
         logger.warning("Episode summary rate limited for session %s", session_id)
     except APIStatusError as exc:
         if exc.status_code in (413, 429):
-            db.rollback()
+            if db is not None:
+                db.rollback()
             logger.warning("Episode summary rejected with status %s for session %s", exc.status_code, session_id)
         else:
-            db.rollback()
+            if db is not None:
+                db.rollback()
             logger.exception("Failed to create episodic memory for session %s", session_id)
     except Exception:
-        db.rollback()
+        if db is not None:
+            db.rollback()
         logger.exception("Failed to create episodic memory for session %s", session_id)
     finally:
         if db is not None:

@@ -36,6 +36,71 @@ def test_user_resolution_requires_a_unique_author():
     assert semantic.resolve_user_id("Alex", {"Alex": first, "alex ": second}) is None
 
 
+def test_first_person_session_op_is_rerouted_to_the_only_author():
+    author_id = uuid.uuid4()
+    op = _op(content="- [stated] I use DBeaver to inspect my Postgres databases.")
+
+    guarded, dropped = semantic.guard_semantic_op_scopes([op], {"Alice": author_id})
+
+    assert dropped == []
+    assert len(guarded) == 1
+    assert guarded[0].scope == "user"
+    assert guarded[0].user == "Alice"
+
+
+def test_first_person_session_op_is_dropped_with_multiple_authors():
+    authors = {"Alice": uuid.uuid4(), "Bob": uuid.uuid4()}
+    op = _op(content="- [stated] I use DBeaver.")
+
+    guarded, dropped = semantic.guard_semantic_op_scopes([op], authors)
+
+    assert guarded == []
+    assert len(dropped) == 1
+
+
+def test_impersonal_session_op_passes_scope_guard():
+    op = _op(content="- [stated] The project uses PostgreSQL.")
+
+    guarded, dropped = semantic.guard_semantic_op_scopes([op], {"Alice": uuid.uuid4()})
+
+    assert guarded == [op]
+    assert dropped == []
+
+
+def test_user_op_for_unknown_author_is_dropped():
+    op = _op(scope="user", user="Mallory", content="- [stated] I use DBeaver.")
+
+    guarded, dropped = semantic.guard_semantic_op_scopes([op], {"Alice": uuid.uuid4()})
+
+    assert guarded == []
+    assert "does not resolve" in dropped[0]
+
+
+def test_extractor_input_uses_plain_message_dicts_without_a_database():
+    author_id = uuid.uuid4()
+    messages = [{
+        "id": str(uuid.uuid4()),
+        "role": "user",
+        "author_id": str(author_id),
+        "author_name": "Alice",
+        "content": "A" * 1300,
+        "created_at": datetime(2026, 10, 14, 12, 30),
+    }]
+    docs = [{
+        "scope_type": "user",
+        "scope_id": str(author_id),
+        "path": "profile.md",
+        "description": "Profile facts",
+        "content": "- [stated] Prefers concise plans.",
+    }]
+
+    authors, prompt = semantic.build_extractor_input(messages, docs)
+
+    assert authors == {"Alice": author_id}
+    assert "[2026-10-14 12:30] Alice: " + ("A" * 1200) + "…" in prompt
+    assert "profile.md" in prompt
+
+
 def test_doc_lines_are_deduplicated():
     content = semantic.normalize_doc_content("- [stated] Uses Python\nUses Python\n- [stated] Uses Python")
     assert content == "- [stated] Uses Python"
