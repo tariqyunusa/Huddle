@@ -1,5 +1,12 @@
 from pathlib import Path
 from contextlib import asynccontextmanager
+import logging
+import os
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(levelname)s [%(name)s] %(message)s",
+)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
