@@ -204,8 +204,22 @@ def _normalize_ops_before_validation(payload, db, session_id, authors):
             op["op"] = op_name
         if "scope" not in op:
             logger.info("Dropping semantic op %d because scope is missing; scope will not be inferred", index + 1)
+        if isinstance(op.get("path"), str) and op["path"].startswith("procedures/"):
+            dropped.append(f"op {index + 1}: procedural paths are never writable by the semantic extractor")
+            logger.info("Dropping semantic op %d targeting procedural path %s", index + 1, op["path"])
+            continue
+        scope = op.get("scope")
+        if scope in {"user", "session"} and isinstance(op.get("path"), str):
+            scope_id = session_id if scope == "session" else resolve_user_id(op.get("user"), authors)
+            if scope_id is not None:
+                procedural_target = db.query(MemoryDoc).filter_by(
+                    scope_type=scope, scope_id=scope_id, path=op["path"], kind="procedural",
+                ).first()
+                if procedural_target is not None:
+                    dropped.append(f"op {index + 1}: target matches an existing procedural document")
+                    logger.info("Dropping semantic op %d targeting existing procedural doc %s", index + 1, op["path"])
+                    continue
         if op_name in _OP_ALIASES:
-            scope = op.get("scope")
             if scope not in {"user", "session"}:
                 logger.info(
                     "Semantic op %d uses alias %s without a valid scope; dropping it without inferring scope",
@@ -222,6 +236,7 @@ def _normalize_ops_before_validation(payload, db, session_id, authors):
                 scope_type=scope,
                 scope_id=scope_id,
                 path=op.get("path"),
+                kind="semantic",
             ).first() is not None
             op["op"] = "update" if exists else "create"
         if op.get("op") == "append" and "line" not in op and isinstance(op.get("content"), str):
@@ -342,6 +357,13 @@ def build_extractor_input(messages: list[Mapping], existing_docs: list[Mapping])
     return authors, prompt_input
 
 
+def load_semantic_docs(db, filters):
+    return db.query(MemoryDoc).filter(
+        MemoryDoc.kind == "semantic",
+        or_(*filters),
+    ).order_by(MemoryDoc.updated_at.desc()).all()
+
+
 def normalize_doc_content(content: str) -> str:
     lines = []
     seen = set()
@@ -378,7 +400,7 @@ def apply_semantic_op(db, op: SemanticOp, session_id, authors: dict[str, uuid.UU
         return False
 
     if op.op == "create":
-        if db.query(MemoryDoc).filter_by(scope_type=op.scope, scope_id=scope_id, path=op.path).first():
+        if db.query(MemoryDoc).filter_by(scope_type=op.scope, scope_id=scope_id, path=op.path, kind="semantic").first():
             return False
         content = _content_for_op(op, None)
         if not content:
@@ -395,7 +417,7 @@ def apply_semantic_op(db, op: SemanticOp, session_id, authors: dict[str, uuid.UU
         return True
 
     for attempt in range(2):
-        doc = db.query(MemoryDoc).filter_by(scope_type=op.scope, scope_id=scope_id, path=op.path).first()
+        doc = db.query(MemoryDoc).filter_by(scope_type=op.scope, scope_id=scope_id, path=op.path, kind="semantic").first()
         if not doc:
             return False
         new_content = _content_for_op(op, doc.content)
@@ -425,6 +447,7 @@ def apply_semantic_op(db, op: SemanticOp, session_id, authors: dict[str, uuid.UU
 
 
 def _render_semantic_context(docs: list[MemoryDoc]) -> str:
+    docs = [doc for doc in docs if doc.kind == "semantic"]
     user_docs = [doc for doc in docs if doc.scope_type == "user"]
     session_docs = [doc for doc in docs if doc.scope_type == "session"]
     blocks = ["[Memory — known facts]"]
@@ -439,7 +462,7 @@ def _render_semantic_context(docs: list[MemoryDoc]) -> str:
 
 
 def build_semantic_context(docs, max_chars: int = 3000) -> str:
-    ordered = sorted(docs, key=lambda doc: doc.updated_at or datetime.min, reverse=True)
+    ordered = sorted((doc for doc in docs if doc.kind == "semantic"), key=lambda doc: doc.updated_at or datetime.min, reverse=True)
     selected = list(ordered)
     while selected:
         context = _render_semantic_context(selected)
@@ -454,8 +477,10 @@ def visible_semantic_docs(docs, session_id, latest_user_id):
     session_id = uuid.UUID(str(session_id))
     return [
         doc for doc in docs
-        if (doc.scope_type == "session" and doc.scope_id == session_id)
-        or (latest_user_id is not None and doc.scope_type == "user" and doc.scope_id == latest_user_id)
+        if doc.kind == "semantic" and (
+            (doc.scope_type == "session" and doc.scope_id == session_id)
+            or (latest_user_id is not None and doc.scope_type == "user" and doc.scope_id == latest_user_id)
+        )
     ]
 
 
@@ -480,7 +505,7 @@ async def extract_semantic(session_id, messages, triggering_user_id):
         filters = [((MemoryDoc.scope_type == "session") & (MemoryDoc.scope_id == session_id))]
         if user_ids:
             filters.append((MemoryDoc.scope_type == "user") & MemoryDoc.scope_id.in_(user_ids))
-        existing_rows = db.query(MemoryDoc).filter(or_(*filters)).order_by(MemoryDoc.updated_at.desc()).all()
+        existing_rows = load_semantic_docs(db, filters)
         existing_docs = [
             {
                 "scope_type": doc.scope_type,
