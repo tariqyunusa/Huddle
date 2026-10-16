@@ -8,12 +8,13 @@ services:
       - .env
     volumes:
       - .:/app
+      - fastembed_cache:/app/.fastembed_cache
     depends_on:
       - db
       - redis
 
   db:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: huddle
@@ -32,3 +33,4 @@ services:
 
 volumes:
   pgdata:
+  fastembed_cache:

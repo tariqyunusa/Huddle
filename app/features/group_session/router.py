@@ -2,10 +2,14 @@
 Group reasoning session WebSocket endpoint — Brick 5: real Claude integration.
 """
 import json
+import asyncio
 import uuid
 import os
+import logging
 
 import redis.asyncio as aioredis
+from redis.exceptions import LockNotOwnedError
+from openai import APIStatusError, RateLimitError
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from typing import List
@@ -16,19 +20,24 @@ from .connection_manager import manager
 from .export import generate_document_markdown, markdown_to_docx, markdown_to_pdf
 from .models import GroupMessage, GroupSession, GroupParticipant, GroupDocument, GeneratedDocument, SessionInviteLink
 from .schemas import CreateSessionRequest, InviteRequest, RedeemInviteLinkRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
-from .talon import build_transcript, generate_reply, generate_title, build_document_context
+from .talon import build_transcript, fit_chat_context_budget, generate_reply, generate_title, build_document_context
 from app.features.users.jwt import decode_access_token
 from app.features.users.email import send_session_invite_email
 from app.features.users.dependencies import get_current_user, get_verified_user
 from app.features.users.models import User
 from app.features.users.usage import check_usage_allowed, record_usage, PLAN_TOKEN_LIMITS
 from app.features.users.tokens import generate_refresh_token, hash_token
+from app.features.memory.episodic import maybe_create_episode, retrieve_episodes, build_memory_context
+from app.features.memory.models import Episode, MemoryDoc
+from app.features.memory.semantic import build_semantic_context, visible_semantic_docs
+from app.features.memory.procedures import build_procedural_context, load_procedural_docs
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-LOCK_TIMEOUT_SECONDS = 30
+LOCK_TIMEOUT_SECONDS = 90
 
 
 @router.post("/sessions/{session_id}/invite-link")
@@ -344,15 +353,101 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     db.close()
                     
                 doc_context = build_document_context(documents)
+                memory_context = ""
+                semantic_context = ""
+                procedural_context = ""
+                latest_human_message = next((m for m in reversed(history) if m.role == "user" and m.author_id), None)
+                try:
+                    semantic_session_id = uuid.UUID(str(session_id))
+                    semantic_db = SessionLocal()
+                    try:
+                        semantic_query = semantic_db.query(MemoryDoc).filter(
+                            MemoryDoc.kind == "semantic",
+                            (MemoryDoc.scope_type == "session") & (MemoryDoc.scope_id == semantic_session_id)
+                        )
+                        if latest_human_message:
+                            semantic_query = semantic_db.query(MemoryDoc).filter(
+                                MemoryDoc.kind == "semantic",
+                                ((MemoryDoc.scope_type == "session") & (MemoryDoc.scope_id == semantic_session_id))
+                                | ((MemoryDoc.scope_type == "user") & (MemoryDoc.scope_id == latest_human_message.author_id))
+                            )
+                        semantic_docs = semantic_query.order_by(MemoryDoc.updated_at.desc()).all()
+                    finally:
+                        semantic_db.close()
+                    semantic_docs = visible_semantic_docs(
+                        semantic_docs,
+                        semantic_session_id,
+                        latest_human_message.author_id if latest_human_message else None,
+                    )
+                    if latest_human_message:
+                        for semantic_doc in semantic_docs:
+                            if semantic_doc.scope_type == "user":
+                                semantic_doc._semantic_display_name = latest_human_message.author_name
+                    semantic_context = build_semantic_context(semantic_docs)
+                except Exception:
+                    logger.exception("Failed to retrieve semantic memory")
+                try:
+                    procedural_db = SessionLocal()
+                    try:
+                        procedural_docs = load_procedural_docs(
+                            procedural_db,
+                            uuid.UUID(str(session_id)),
+                            latest_human_message.author_id if latest_human_message else None,
+                        )
+                    finally:
+                        procedural_db.close()
+                    procedural_context = build_procedural_context(procedural_docs)
+                except Exception:
+                    logger.exception("Failed to retrieve procedural memory")
+                latest_user_message = next((m.content for m in reversed(history) if m.role == "user"), "")
+                live_window = history[-20:]
+                exclude_after = live_window[0].created_at if live_window else None
+                try:
+                    episodes = await asyncio.wait_for(
+                        retrieve_episodes(session_id, latest_user_message, exclude_after=exclude_after),
+                        timeout=5,
+                    )
+                    memory_context = build_memory_context(episodes)
+                except Exception:
+                    logger.exception("Failed to retrieve episodic memory")
+
+                transcript, memory_context, semantic_context, procedural_context = fit_chat_context_budget(
+                    transcript,
+                    doc_context,
+                    memory_context,
+                    semantic_context,
+                    procedural_context,
+                )
+
+                transcript_chars = sum(len(message.get("content", "")) for message in transcript)
+                logger.info(
+                    "Talon input size (approx tokens): transcript=%d, document_context=%d, memory_context=%d, semantic_context=%d, procedural_context=%d",
+                    transcript_chars // 4,
+                    len(doc_context) // 4,
+                    len(memory_context) // 4,
+                    len(semantic_context) // 4,
+                    len(procedural_context) // 4,
+                )
+                final_messages = []
+                if semantic_context:
+                    final_messages.append({"role": "user", "content": semantic_context})
+                if memory_context:
+                    final_messages.append({"role": "user", "content": memory_context})
                 if doc_context:
-                    transcript = [{"role": "user", "content": doc_context}] + transcript
+                    final_messages.append({"role": "user", "content": doc_context})
+                final_messages.extend(transcript)
 
                 try:
-                    reply_text, tokens_used, searched, doc_request = await generate_reply(transcript)
+                    reply_text, tokens_used, searched, doc_request = await generate_reply(final_messages, extra_system=procedural_context or None)
                 except Exception as e:
+                    logger.exception("generate_reply failed (%s): %s", type(e).__name__, e)
+                    if isinstance(e, RateLimitError) or (isinstance(e, APIStatusError) and e.status_code in (413, 429)):
+                        error_content = "Talon hit its rate limit. Wait a minute and try again."
+                    else:
+                        error_content = "Talon is temporarily overloaded. Try a shorter message or wait a moment."
                     await manager.broadcast(session_id, {
                         "type": "error",
-                        "content": "Talon is temporarily overloaded. Try a shorter message or wait a moment.",
+                        "content": error_content,
                     })
                     continue
                 
@@ -360,7 +455,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     db = SessionLocal()
                     try:
                         record_usage(current_user.id, tokens_used, db)
-                        markdown_text, doc_tokens = await generate_document_markdown(transcript, doc_request["instructions"])
+                        markdown_text, doc_tokens = await generate_document_markdown(final_messages, doc_request["instructions"])
                         record_usage(current_user.id, doc_tokens, db)
                         doc_record = GeneratedDocument(
                             id=uuid.uuid4(),
@@ -415,7 +510,13 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     "content": reply_text,
                 })
             finally:
-                await lock.release()
+                try:
+                    await lock.release()
+                except LockNotOwnedError:
+                    import logging
+                    logging.getLogger(__name__).warning("Session lock expired before release for session %s", session_id)
+                finally:
+                    asyncio.create_task(maybe_create_episode(session_id, current_user.id))
 
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)
@@ -527,6 +628,8 @@ def delete_session(
     if session.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="Only the session creator can delete it")
 
+    db.query(Episode).filter(Episode.session_id == session_id).delete()
+    db.query(MemoryDoc).filter(MemoryDoc.scope_type == "session", MemoryDoc.scope_id == session_id).delete()
     db.query(GroupMessage).filter(GroupMessage.session_id == session_id).delete()
     db.query(GroupParticipant).filter(GroupParticipant.session_id == session_id).delete()
     db.query(SessionInviteLink).filter(SessionInviteLink.session_id == session_id).delete()
