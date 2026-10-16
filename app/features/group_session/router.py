@@ -9,7 +9,7 @@ import logging
 
 import redis.asyncio as aioredis
 from redis.exceptions import LockNotOwnedError
-from openai import APIStatusError, RateLimitError
+from openai import APIStatusError, AuthenticationError, RateLimitError
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from typing import List
@@ -441,7 +441,9 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     reply_text, tokens_used, searched, doc_request = await generate_reply(final_messages, extra_system=procedural_context or None)
                 except Exception as e:
                     logger.exception("generate_reply failed (%s): %s", type(e).__name__, e)
-                    if isinstance(e, RateLimitError) or (isinstance(e, APIStatusError) and e.status_code in (413, 429)):
+                    if isinstance(e, AuthenticationError):
+                        error_content = "Talon is unavailable due to a server configuration problem."
+                    elif isinstance(e, RateLimitError) or (isinstance(e, APIStatusError) and e.status_code in (413, 429)):
                         error_content = "Talon hit its rate limit. Wait a minute and try again."
                     else:
                         error_content = "Talon is temporarily overloaded. Try a shorter message or wait a moment."
