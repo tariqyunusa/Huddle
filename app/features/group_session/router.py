@@ -6,6 +6,8 @@ import asyncio
 import uuid
 import os
 import logging
+import unicodedata
+from urllib.parse import quote
 
 import redis.asyncio as aioredis
 from redis.exceptions import LockNotOwnedError
@@ -676,20 +678,56 @@ async def export_session(
         .all()
     )
     transcript = build_transcript(history)
+    if not transcript:
+        raise HTTPException(status_code=422, detail="Cannot export a session with no messages")
 
-    markdown_text = await generate_document_markdown(transcript, instructions)
+    try:
+        markdown_text, tokens_used = await generate_document_markdown(transcript, instructions)
+    except AuthenticationError:
+        logger.error("Session export failed because Talon authentication is misconfigured", exc_info=True)
+        raise HTTPException(status_code=502, detail="Talon is unavailable due to a server configuration problem")
+    except RateLimitError:
+        raise HTTPException(status_code=429, detail="Talon is rate limited, try again in a minute")
+    except APIStatusError as exc:
+        if exc.status_code in (413, 429):
+            raise HTTPException(status_code=429, detail="Talon is rate limited, try again in a minute")
+        logger.exception("Session export Groq request failed")
+        raise HTTPException(status_code=502, detail="Talon could not generate the export")
+    except Exception:
+        logger.exception("Session export Groq request failed")
+        raise HTTPException(status_code=502, detail="Talon could not generate the export")
+
+    if not markdown_text or not markdown_text.strip():
+        raise HTTPException(status_code=502, detail="Talon returned empty export content")
+    record_usage(current_user.id, tokens_used, db)
+
+    safe_title = _sanitize_export_title(session.title)
 
     if format == "docx":
-        file_buffer = markdown_to_docx(markdown_text)
+        file_buffer = await asyncio.to_thread(markdown_to_docx, markdown_text)
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        filename = f"{session.title or 'session'}.docx"
     else:
-        file_buffer = markdown_to_pdf(markdown_text)
+        file_buffer = await asyncio.to_thread(markdown_to_pdf, markdown_text)
         media_type = "application/pdf"
-        filename = f"{session.title or 'session'}.pdf"
+    filename, encoded_filename = _export_filename_header(safe_title, format)
 
     return StreamingResponse(
         file_buffer,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'},
     )
+
+
+def _sanitize_export_title(title: str | None) -> str:
+    cleaned = "".join(char for char in (title or "") if char.isalpha() or char.isdigit() or char in " -_")
+    cleaned = cleaned[:60].strip()
+    return cleaned or "session"
+
+
+def _export_filename_header(title: str | None, extension: str) -> tuple[str, str]:
+    safe_title = _sanitize_export_title(title)
+    ascii_title = unicodedata.normalize("NFKD", safe_title).encode("ascii", "ignore").decode("ascii")
+    ascii_title = ascii_title[:60].strip() or "session"
+    unicode_filename = f"{safe_title}.{extension}"
+    ascii_filename = f"{ascii_title}.{extension}"
+    return ascii_filename, quote(unicode_filename, safe="")
