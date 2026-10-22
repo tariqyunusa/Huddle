@@ -9,6 +9,7 @@ from app.features.group_session.models import GroupMessage
 from app.features.group_session.models import GroupDocument
 from .embeddings import embed
 from .models import Episode
+from app.features.group_session.connection_manager import manager
 
 logger = logging.getLogger(__name__)
 EPISODE_EVERY_N_MESSAGES = int(os.getenv("EPISODE_EVERY_N_MESSAGES", "4"))
@@ -39,6 +40,16 @@ def build_memory_context(episodes, max_chars: int = 3000) -> str:
         selected.pop()
     return ""
 
+async def emit_memory_status(session_id, active:bool):
+    try:
+        await manager.broadcast(str(session_id), {
+            "type": "memory_status",
+            "active": active,
+            "label": "Saving to memory"
+        })
+    except Exception:
+        logger.exception("emit_memory_status faled for session %s", session_id)
+
 
 async def maybe_create_episode(session_id, triggering_user_id):
     import asyncio
@@ -56,6 +67,7 @@ async def maybe_create_episode(session_id, triggering_user_id):
     if key in _in_progress:
         return
     _in_progress.add(key)
+    announced = False
     db = SessionLocal()
     try:
         latest = db.query(Episode).filter(Episode.session_id == session_id).order_by(Episode.last_message_at.desc()).first()
@@ -65,6 +77,9 @@ async def maybe_create_episode(session_id, triggering_user_id):
         messages = query.order_by(GroupMessage.created_at).all()
         if not should_create_episode(len(messages)):
             return
+        
+        await emit_memory_status(key, True)
+        announced = True
 
         input_budget = 9000
         included_messages = []
@@ -140,6 +155,8 @@ async def maybe_create_episode(session_id, triggering_user_id):
         if EXTRACTOR_ENABLED:
             await asyncio.sleep(20)
             await extract_semantic(session_id, semantic_messages, triggering_user_id)
+            
+        
     except RateLimitError:
         if db is not None:
             db.rollback()
@@ -158,6 +175,8 @@ async def maybe_create_episode(session_id, triggering_user_id):
             db.rollback()
         logger.exception("Failed to create episodic memory for session %s", session_id)
     finally:
+        if announced:
+            await emit_memory_status(key, False)
         if db is not None:
             db.close()
         _in_progress.discard(key)
