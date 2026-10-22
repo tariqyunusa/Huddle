@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from app.db.session import SessionLocal, get_db
 from .connection_manager import manager
-from .export import generate_document_markdown, markdown_to_docx, markdown_to_pdf
+from .export import generate_document_markdown, markdown_to_docx, markdown_to_pdf, emit_status
 from .models import GroupMessage, GroupSession, GroupParticipant, GroupDocument, GeneratedDocument, SessionInviteLink
 from .schemas import CreateSessionRequest, InviteRequest, RedeemInviteLinkRequest, SessionResponse, ParticipantResponse, UpdateSessionRequest
 from .talon import build_transcript, fit_chat_context_budget, generate_reply, generate_title, build_document_context
@@ -33,6 +33,7 @@ from app.features.memory.episodic import maybe_create_episode, retrieve_episodes
 from app.features.memory.models import Episode, MemoryDoc
 from app.features.memory.semantic import build_semantic_context, visible_semantic_docs
 from app.features.memory.procedures import build_procedural_context, load_procedural_docs
+
 
 redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
@@ -335,6 +336,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
 
             try:
                 await manager.broadcast(session_id, {"type": "thinking"})
+                await emit_status(session_id, "reading_memory", "Checking memory")
 
                 db = SessionLocal()
                 try:
@@ -438,6 +440,8 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                 if doc_context:
                     final_messages.append({"role": "user", "content": doc_context})
                 final_messages.extend(transcript)
+                
+                await emit_status(session_id, "thinking", "Thinking")
 
                 try:
                     reply_text, tokens_used, searched, doc_request = await generate_reply(final_messages, extra_system=procedural_context or None)
@@ -459,6 +463,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     db = SessionLocal()
                     try:
                         record_usage(current_user.id, tokens_used, db)
+                        await emit_status(session_id, "generating_document", "Writing document", title=doc_request["title"])
                         markdown_text, doc_tokens = await generate_document_markdown(final_messages, doc_request["instructions"])
                         record_usage(current_user.id, doc_tokens, db)
                         doc_record = GeneratedDocument(
@@ -520,6 +525,7 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     import logging
                     logging.getLogger(__name__).warning("Session lock expired before release for session %s", session_id)
                 finally:
+                    await emit_status(session_id, "idle", "")
                     asyncio.create_task(maybe_create_episode(session_id, current_user.id))
 
     except WebSocketDisconnect:

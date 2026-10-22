@@ -4,6 +4,7 @@ import markdown as md
 from docx import Document as DocxDocument
 from htmldocx import HtmlToDocx
 from weasyprint import HTML
+from .connection_manager import manager
 
 from .talon import client, SYSTEM_PROMPT  # reuse the same Groq client
 
@@ -53,3 +54,8 @@ def markdown_to_pdf(markdown_text: str) -> io.BytesIO:
     HTML(string=styled_html).write_pdf(buffer)
     buffer.seek(0)
     return buffer
+
+async def emit_status(session_id: str, phase: str, label: str, **extra):
+    await manager.broadcast(session_id, {
+        "type": "talon_status", "phase": phase, "label": label, **extra
+    })
