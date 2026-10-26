@@ -12,3 +12,4 @@ router = APIRouter(prefix="/github", tags=["github"])
 @router.get("/install-url")
 def install_url(current_user: User = Depends(get_current_user)):
     state = jwt.encode({"sub": str(current_user.id), "purpose": "github-install", "exp": int(time.time()) + 600}, os.environ["JWT_SECRET_KEY"], algorithm="HS256")
+    return {"url": f"https://github.com/apps/{os.environ['GITHUB_APP_SLUG']}/installations/new?state={state}"}
