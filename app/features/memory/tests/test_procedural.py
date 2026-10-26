@@ -5,6 +5,7 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 os.environ.setdefault("GROQ_API_KEY", "unit-test-key")
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -81,6 +82,19 @@ class _DB:
     def delete(self, doc):
         self.docs.remove(doc)
 
+    def execute(self, statement):
+        criteria = statement._where_criteria
+        expected = {}
+        for clause in criteria:
+            expected[clause.left.key] = clause.right.value
+        values = statement._values
+        values = {key: value.value if hasattr(value, "value") else value for key, value in values.items()}
+        doc = next((item for item in self.docs if item.id == expected.get("id") and item.version == expected.get("version")), None)
+        if doc:
+            for key, value in values.items():
+                setattr(doc, key, value)
+        return SimpleNamespace(rowcount=1 if doc else 0)
+
 
 def _doc(scope, scope_id, path="procedures/style.md", content="Keep answers concise.", *, kind="procedural", updated_at=None, version=1):
     return SimpleNamespace(
@@ -101,7 +115,7 @@ def test_procedural_path_validation_and_text_limits_normalization():
             procedures.validate_procedural_path(path)
     normalized = _body(content="Use short‑lived—examples\x01.\nKeep it brief.")
     assert normalized.content == "Use short-lived-examples.\nKeep it brief."
-    with pytest.raises(ValueError):
+    with pytest.raises(ValidationError):
         _body(content="x" * 4001)
     with pytest.raises(ValueError):
         _body(description="d" * 151)
@@ -138,6 +152,64 @@ def test_user_reads_and_deletes_only_owned_procedures():
     with pytest.raises(HTTPException) as exc:
         router.delete_memory_doc(doc.id, db, SimpleNamespace(id=other))
     assert exc.value.status_code == 403
+
+
+def _semantic_edit_body(**values):
+    return router.SemanticDocEdit.model_validate({"content": "Updated fact", "if_version": 1, **values})
+
+
+def test_semantic_edit_owner_and_normalization():
+    owner = uuid.uuid4()
+    doc = _doc("user", owner, path="profile.md", kind="semantic", content="old", version=1)
+    db = _DB([doc])
+    result = router.edit_memory_doc(doc.id, _semantic_edit_body(content="  Likes tea—daily\nLikes tea-daily\n\n- [stated] Likes tea-daily\x01"), db, SimpleNamespace(id=owner))
+    assert result["content"] == "- [stated] Likes tea-daily"
+    assert result["version"] == 2
+    assert result["author_user_id"] is None
+
+
+def test_semantic_edit_non_owner_is_forbidden():
+    owner, other = uuid.uuid4(), uuid.uuid4()
+    doc = _doc("user", owner, kind="semantic")
+    with pytest.raises(HTTPException) as exc:
+        router.edit_memory_doc(doc.id, _semantic_edit_body(), _DB([doc]), SimpleNamespace(id=other))
+    assert exc.value.status_code == 403
+
+
+def test_semantic_edit_session_member_and_non_member_permissions():
+    creator, member, outsider, session_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    session = SimpleNamespace(id=session_id, created_by=creator)
+    doc = _doc("session", session_id, path="topics/session.md", kind="semantic")
+    db = _DB([doc], session=session, participants=[SimpleNamespace(session_id=session_id, user_id=member)])
+    assert router.edit_memory_doc(doc.id, _semantic_edit_body(), db, SimpleNamespace(id=member))["version"] == 2
+    with pytest.raises(HTTPException) as exc:
+        router.edit_memory_doc(doc.id, _semantic_edit_body(if_version=2), db, SimpleNamespace(id=outsider))
+    assert exc.value.status_code == 403
+
+
+def test_semantic_edit_stale_version_returns_current_content():
+    owner = uuid.uuid4()
+    doc = _doc("user", owner, path="profile.md", kind="semantic", content="current", version=4)
+    with pytest.raises(HTTPException) as exc:
+        router.edit_memory_doc(doc.id, _semantic_edit_body(if_version=3), _DB([doc]), SimpleNamespace(id=owner))
+    assert exc.value.status_code == 409
+    assert exc.value.detail["current_version"] == 4
+    assert exc.value.detail["current_content"] == "current"
+
+
+def test_semantic_edit_rejects_procedural_empty_and_oversized_content():
+    owner = uuid.uuid4()
+    procedural = _doc("user", owner)
+    with pytest.raises(HTTPException) as exc:
+        router.edit_memory_doc(procedural.id, _semantic_edit_body(), _DB([procedural]), SimpleNamespace(id=owner))
+    assert exc.value.status_code == 400
+
+    semantic_doc = _doc("user", owner, path="profile.md", kind="semantic")
+    with pytest.raises(HTTPException) as exc:
+        router.edit_memory_doc(semantic_doc.id, _semantic_edit_body(content="\x01 \n\n"), _DB([semantic_doc]), SimpleNamespace(id=owner))
+    assert exc.value.status_code == 422
+    with pytest.raises(ValueError):
+        router.SemanticDocEdit.model_validate({"content": "x" * 6001, "if_version": 1})
 
 
 def test_session_procedural_write_and_delete_are_creator_only():

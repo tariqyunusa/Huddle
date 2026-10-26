@@ -1,8 +1,11 @@
 import uuid
+import logging
+import unicodedata
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -19,6 +22,48 @@ from app.features.users.dependencies import get_verified_user
 from app.features.users.models import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+MAX_SEMANTIC_CONTENT_CHARS = 6000
+MAX_SEMANTIC_DESCRIPTION_CHARS = 150
+
+
+class SemanticDocEdit(BaseModel):
+    content: str = Field(max_length=MAX_SEMANTIC_CONTENT_CHARS)
+    description: str | None = Field(default=None, max_length=MAX_SEMANTIC_DESCRIPTION_CHARS)
+    if_version: int = Field(ge=1)
+
+    @field_validator("content")
+    @classmethod
+    def normalize_content(cls, value: str):
+        value = "".join(
+            " " if ch in "\u00a0\u2007\u202f" else "-" if unicodedata.category(ch) == "Pd"
+            else ch for ch in value if unicodedata.category(ch) != "Cc" or ch in "\n\r"
+        )
+        lines = []
+        seen = set()
+        for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if not line.startswith("- [stated] "):
+                line = "- [stated] " + line
+            if line not in seen:
+                seen.add(line)
+                lines.append(line)
+        normalized = "\n".join(lines)
+        if len(normalized) > MAX_SEMANTIC_CONTENT_CHARS:
+            raise ValueError(f"content must be at most {MAX_SEMANTIC_CONTENT_CHARS} characters after cleanup")
+        return normalized
+
+    @field_validator("description")
+    @classmethod
+    def normalize_description(cls, value: str | None):
+        if value is None:
+            return None
+        return "".join(
+            " " if ch in "\u00a0\u2007\u202f" else "-" if unicodedata.category(ch) == "Pd"
+            else ch for ch in value if unicodedata.category(ch) not in {"Cc", "Cf"}
+        ).strip()
 
 
 class ProceduralDocWrite(BaseModel):
@@ -207,3 +252,60 @@ def delete_memory_doc(
     db.delete(doc)
     db.commit()
     return {"message": "Memory document deleted"}
+
+
+@router.patch("/memory/docs/{doc_id}")
+def edit_memory_doc(
+    doc_id: uuid.UUID,
+    body: SemanticDocEdit,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_verified_user),
+):
+    doc = db.query(MemoryDoc).filter(MemoryDoc.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Memory document not found")
+    if doc.kind == "procedural":
+        raise HTTPException(status_code=400, detail="Use the procedures endpoints")
+    if doc.kind != "semantic":
+        raise HTTPException(status_code=400, detail="Only semantic memory documents can be edited")
+    if doc.scope_type == "user":
+        if doc.scope_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not allowed to edit this memory document")
+    elif doc.scope_type == "session":
+        if not _is_session_member(db, doc.scope_id, current_user.id):
+            raise HTTPException(status_code=403, detail="Not a member of this session")
+    else:
+        raise HTTPException(status_code=403, detail="Not allowed to edit this memory document")
+    if not body.content:
+        raise HTTPException(status_code=422, detail="Content is empty after cleanup; use DELETE instead")
+
+    old_length = len(doc.content)
+    values = {
+        "content": body.content,
+        "version": body.if_version + 1,
+        "updated_at": datetime.utcnow(),
+    }
+    if body.description is not None:
+        values["description"] = body.description
+    result = db.execute(
+        update(MemoryDoc)
+        .where(MemoryDoc.id == doc.id, MemoryDoc.version == body.if_version)
+        .values(**values)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        current = db.query(MemoryDoc).filter(MemoryDoc.id == doc_id).first()
+        if not current:
+            raise HTTPException(status_code=404, detail="Memory document not found")
+        raise HTTPException(status_code=409, detail={
+            "detail": "Version conflict",
+            "current_version": current.version,
+            "current_content": current.content,
+        })
+    db.commit()
+    db.refresh(doc)
+    logger.info(
+        "Edited semantic memory doc id=%s scope=%s who=%s old_length=%d new_length=%d",
+        doc.id, doc.scope_type, current_user.id, old_length, len(body.content),
+    )
+    return _serialize(doc)
