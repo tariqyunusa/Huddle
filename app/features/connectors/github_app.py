@@ -3,6 +3,7 @@ import httpx
 from jose import jwt
 
 API = "https://api.github.com"
+MAX_TOTAL_BYTES = 15_000_000
 
 class InstallationGone(Exception):
     pass
@@ -59,4 +60,4 @@ async def verify_installation(code: str, installation_id: int) -> dict | None:
                     "account_type": i["account"]["type"],
                     "repository_selection": i["repository_selection"]}
     return None
-            
+
