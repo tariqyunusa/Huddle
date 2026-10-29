@@ -106,6 +106,7 @@ class Repo(Base):
     status = Column(String, nullable=False, default="pending")  # pending | syncing | ready | failed
     file_count = Column(Integer, nullable=False, default=0)
     last_synced_at = Column(DateTime(timezone=True))
+    installation_id = Column(BigInteger, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     __table_args__ = (UniqueConstraint("scope_type", "scope_id", "name"),)
 
