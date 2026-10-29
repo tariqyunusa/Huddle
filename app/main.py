@@ -17,6 +17,7 @@ from app.features.users.router import router as users_router
 from app.features.billing.router import router as billing_router
 from app.features.memory.router import router as memory_router
 from app.features.connectors.router import router as github_connector_router
+from app.features.connectors.repos import router as repos_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,6 +49,7 @@ app.include_router(users_router)
 app.include_router(billing_router)
 app.include_router(memory_router)
 app.include_router(github_connector_router)
+app.include_router(repos_router)
 
 
 @app.get("/health")
