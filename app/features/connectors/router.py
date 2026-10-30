@@ -10,7 +10,7 @@ from app.db.session import get_db
 from sqlalchemy.orm import Session
 from app.features.users.models import GitHubInstallation
 from fastapi.responses import RedirectResponse
-from app.features.connectors.github_app import (
+from app.features.connectors.github.github_app import (
     verify_installation, list_installation_repos, InstallationGone,
 )
 

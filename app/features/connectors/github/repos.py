@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal, get_db
 from app.features.users.dependencies import get_current_user
 from app.features.users.models import User, GitHubInstallation
-from app.features.connectors.github_app import (
+from app.features.connectors.github.github_app import (
     installation_token, list_installation_repos, InstallationGone,
 )
-from app.features.connectors.github import download_repo, GitHubError
+from app.features.connectors.github.github import download_repo, GitHubError
 # Adjust these to wherever your models live (same place your WS route imports from):
 # from ... import Repo, CodeFile, GroupSession, GroupParticipant
 from app.features.group_session.models import GroupSession, GroupParticipant
