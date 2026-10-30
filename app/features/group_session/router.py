@@ -442,9 +442,12 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                 final_messages.extend(transcript)
                 
                 await emit_status(session_id, "thinking", "Thinking")
+                
+                async def on_status(label:str):
+                    await emit_status(session_id, "using_tool", label)
 
                 try:
-                    reply_text, tokens_used, searched, doc_request = await generate_reply(final_messages, extra_system=procedural_context or None)
+                    reply_text, tokens_used, searched, doc_request = await generate_reply(final_messages, extra_system=procedural_context or None, session_id=session_id, on_status=on_status)
                 except Exception as e:
                     logger.exception("generate_reply failed (%s): %s", type(e).__name__, e)
                     if isinstance(e, AuthenticationError):
