@@ -102,14 +102,18 @@ class Repo(Base):
     scope_type = Column(String, nullable=False, default="session")
     scope_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     name = Column(String, nullable=False)
+    provider = Column(String, nullable=False, default="github")
+    url = Column(String, nullable=False)
+    branch = Column(String)
+    commit_sha = Column(String)
+    installation_id = Column(BigInteger, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     status = Column(String, nullable=False, default="pending")  # pending | syncing | ready | failed
+    error = Column(String)
     file_count = Column(Integer, nullable=False, default=0)
     last_synced_at = Column(DateTime(timezone=True))
-    installation_id = Column(BigInteger, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     __table_args__ = (UniqueConstraint("scope_type", "scope_id", "name"),)
-
 
 class CodeFile(Base):
     __tablename__ = "code_files"
