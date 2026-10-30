@@ -17,7 +17,7 @@ from app.features.users.router import router as users_router
 from app.features.billing.router import router as billing_router
 from app.features.memory.router import router as memory_router
 from app.features.connectors.router import router as github_connector_router
-from app.features.connectors.repos import router as repos_router
+from app.features.connectors.github.repos import router as repos_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
