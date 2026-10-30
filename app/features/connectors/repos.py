@@ -13,7 +13,8 @@ from app.features.connectors.github_app import (
 from app.features.connectors.github import download_repo, GitHubError
 # Adjust these to wherever your models live (same place your WS route imports from):
 # from ... import Repo, CodeFile, GroupSession, GroupParticipant
-from app.features.group_session.models import GroupSession, GroupParticipant, Repo, CodeFile
+from app.features.group_session.models import GroupSession, GroupParticipant
+from app.features.users.models import Repo, CodeFile
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sessions/{session_id}/repos", tags=["repos"])
