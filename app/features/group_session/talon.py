@@ -187,7 +187,7 @@ async def generate_reply(messages, extra_system=None, session_id=None, on_status
                          else f"Reading {args.get('path', 'a file')}")
                 await on_status(label)
             convo.append({"role": "tool", "tool_call_id": c.id,
-                          "content": run_code_tool(session_id, c.function.name, args)})
+                          "content": await run_code_tool(session_id, c.function.name, args)})
 
     # out of steps: force a final answer with no tools
     response = await client.chat.completions.create(

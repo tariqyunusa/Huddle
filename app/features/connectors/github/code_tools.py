@@ -1,8 +1,12 @@
 import uuid
+import logging
+
 from app.db.session import SessionLocal
 
-from app.features.users.models import Repo, CodeFile
+from app.features.users.models import Repo, CodeFile, CodeChunk
+from app.features.memory.embeddings import embed
 
+logger = logging.getLogger(__name__)
 MAX_READ_CHARS = 12_000
 DEFAULT_LINES = 300
 
@@ -23,7 +27,17 @@ CODE_TOOLS = [
             "repo": {"type": "string", "description": "owner/name; only needed when several repos are connected"}},
             "required": ["path"]}}},
 ]
-CODE_TOOL_NAMES = {"list_files", "read_file"}
+
+
+SEARCH_TOOL = {"type": "function", "function": {
+    "name": "search_code",
+    "description": "Semantic search over the connected repositories' code. Use it to find where something is implemented, then read_file for full context.",
+    "parameters": {"type": "object", "properties": {
+        "query": {"type": "string"},
+        "top_k": {"type": "integer", "description": "1-10, default 6"}},
+        "required": ["query"]}}}
+
+CODE_TOOL_NAMES = {"list_files", "read_file", "search_code"}
 
 
 def ready_repos(session_id) -> list:
@@ -35,7 +49,7 @@ def ready_repos(session_id) -> list:
         db.close()
 
 
-def run_code_tool(session_id, name: str, args: dict) -> str:
+async def run_code_tool(session_id, name: str, args: dict) -> str:
     # session_id comes from the server, never from the model's arguments.
     db = SessionLocal()
     try:
@@ -80,9 +94,35 @@ def run_code_tool(session_id, name: str, args: dict) -> str:
                     return f"{repo.name}/{path} lines {start}-{i - 1} of {len(lines)} (truncated, continue from line {i}):\n" + "\n".join(body)
                 body.append(row); used += len(row) + 1
             return f"{repo.name}/{path} lines {start}-{end} of {len(lines)}:\n" + "\n".join(body)
+        
+        if name == "search_code":
+            query = (args.get("query") or "").strip()
+            ids = [r.id for r in repos if r.indexed_at]
+            if not query or not ids:
+                return "Search isn't available. Use list_files and read_file."
+            k = min(max(int(args.get("top_k") or 6), 1), 10)
+            qvec = (await embed([query]))[0]
+            rows = (db.query(CodeChunk.start_line, CodeChunk.end_line, CodeChunk.content,
+                             CodeFile.path, Repo.name)
+                    .join(CodeFile, CodeChunk.file_id == CodeFile.id)
+                    .join(Repo, CodeChunk.repo_id == Repo.id)
+                    .filter(CodeChunk.repo_id.in_(ids))
+                    .order_by(CodeChunk.embedding.cosine_distance(qvec))
+                    .limit(k).all())
+            out, used = [], 0
+            for s, e, content, path, rname in rows:
+                block = f"{rname}/{path}:{s}-{e}\n{content}"
+                if used + len(block) > 10_000:
+                    break
+                out.append(block); used += len(block)
+            return "\n\n".join(out) or "No matches."
 
         return f"Unknown tool: {name}"
     except Exception:
+        logger.exception("Code tool %s failed", name)
         return "Tool error."
     finally:
         db.close()
+        
+def code_tools_for(repos) -> list:
+    return CODE_TOOLS + ([SEARCH_TOOL] if any(r.indexed_at for r in repos) else [])
