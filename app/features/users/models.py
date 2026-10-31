@@ -18,6 +18,7 @@ from sqlalchemy import (
     Boolean,
     UniqueConstraint,
     func,
+    text
 )
 from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
@@ -106,6 +107,8 @@ class Repo(Base):
     url = Column(String, nullable=False)
     branch = Column(String)
     commit_sha = Column(String)
+    chunk_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    indexed_at = Column(DateTime(timezone=True))
     installation_id = Column(BigInteger, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     status = Column(String, nullable=False, default="pending")  # pending | syncing | ready | failed

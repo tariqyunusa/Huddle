@@ -11,8 +11,7 @@ from app.features.connectors.github.github_app import (
     installation_token, list_installation_repos, InstallationGone,
 )
 from app.features.connectors.github.github import download_repo, GitHubError
-# Adjust these to wherever your models live (same place your WS route imports from):
-# from ... import Repo, CodeFile, GroupSession, GroupParticipant
+from .indexer import index_repo
 from app.features.group_session.models import GroupSession, GroupParticipant
 from app.features.users.models import Repo, CodeFile
 
@@ -62,6 +61,10 @@ async def import_repo(repo_id: uuid.UUID):
         if repo:
             repo.status, repo.error = "failed", msg
             db.commit()
+            try:
+                await index_repo(repo.id)
+            except Exception:
+                logger.exception("Indexing failed for %s", repo_id)
     finally:
         db.close()
 
