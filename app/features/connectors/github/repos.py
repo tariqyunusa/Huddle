@@ -61,13 +61,15 @@ async def import_repo(repo_id: uuid.UUID):
         if repo:
             repo.status, repo.error = "failed", msg
             db.commit()
-            try:
-                await index_repo(repo.id)
-            except Exception:
-                logger.exception("Indexing failed for %s", repo_id)
+        return
     finally:
         db.close()
 
+    # Import succeeded; the repo is already usable via list_files/read_file.
+    try:
+        await index_repo(repo_id)
+    except Exception:
+        logger.exception("Indexing failed for %s", repo_id)
 
 @router.post("")
 async def attach_repo(session_id: str, body: AttachRepo, bg: BackgroundTasks,
