@@ -5,11 +5,12 @@ import os
 from typing import List
 import json
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 import logging; logger = logging.getLogger(__name__)
 
 from .models import GroupMessage, GroupDocument
-from app.features.connectors.github.code_tools import CODE_TOOLS, CODE_TOOL_NAMES, ready_repos, run_code_tool
+from app.features.connectors.github.code_tools import code_tools_for, CODE_TOOL_NAMES, ready_repos, run_code_tool
+
 
 MAX_HISTORY_MESSAGES = 20
 MIN_ANCHOR_LENGTH = 15  
@@ -141,29 +142,48 @@ def fit_chat_context_budget(
 
 async def generate_reply(messages, extra_system=None, session_id=None, on_status=None):
     repos = ready_repos(session_id) if session_id else []
-    logger.info("code repos for %s: %s", session_id, [(r.name, r.status) for r in repos])
-    tools = [{"type": "browser_search"}, DOCUMENT_TOOL] + (CODE_TOOLS if repos else [])
+    logger.info("code repos for %s: %s", session_id, [(r.name, r.status, bool(r.indexed_at)) for r in repos])
+
+    if repos:
+        tools = [DOCUMENT_TOOL] + code_tools_for(repos)
+    else:
+        tools = [{"type": "browser_search"}, DOCUMENT_TOOL]
+    tool_names = [t["function"]["name"] for t in tools if t.get("type") == "function"]
+
     code_hint = None
     if repos:
         code_hint = ("Connected repositories: " + ", ".join(f"{r.name} ({r.file_count} files)" for r in repos)
-                     + ". Use list_files and read_file to inspect the code instead of guessing.")
+                     + ". To answer questions about the code, start with search_code to locate relevant code, "
+                       "then read_file for full context. Use list_files only to see the project layout. "
+                       "Don't guess file paths. Web search is not available in this session; "
+                       "use only the provided tools.")
     system = build_system_message(extra_system)
     if code_hint:
         system += "\n\n" + code_hint
     convo = [{"role": "system", "content": system}] + messages
-    tokens_used, searched = 0, False
+    tokens_used, searched, bad_calls = 0, False, 0
 
     for _ in range(MAX_TOOL_STEPS):
-        response = await client.chat.completions.create(
-            model="openai/gpt-oss-120b", max_tokens=2000,
-            messages=convo, tools=tools, tool_choice="auto")
+        try:
+            response = await client.chat.completions.create(
+                model="openai/gpt-oss-120b", max_tokens=2000,
+                messages=convo, tools=tools, tool_choice="auto")
+        except BadRequestError as e:
+            if "tool_use_failed" in str(e) and bad_calls < 2:
+                bad_calls += 1
+                logger.warning("Invalid tool call, retrying: %s", e)
+                convo.append({"role": "user", "content":
+                    "That tool call was invalid. The only tools available are: "
+                    + ", ".join(tool_names) + ". Call one of them, or answer directly."})
+                continue
+            raise
         message = response.choices[0].message
         tokens_used += response.usage.total_tokens if response.usage else 0
         searched = searched or bool(getattr(message, "executed_tools", None))
         calls = message.tool_calls or []
 
         logger.info("Talon step: tool_calls=%s content=%r", [c.function.name for c in calls], (message.content or "")[:120])
-        
+
         for call in calls:
             if call.function.name == "generate_document":
                 return None, tokens_used, searched, json.loads(call.function.arguments)
@@ -183,8 +203,12 @@ async def generate_reply(messages, extra_system=None, session_id=None, on_status
             except json.JSONDecodeError:
                 args = {}
             if on_status:
-                label = ("Listing files" if c.function.name == "list_files"
-                         else f"Reading {args.get('path', 'a file')}")
+                if c.function.name == "list_files":
+                    label = "Listing files"
+                elif c.function.name == "search_code":
+                    label = "Searching code"
+                else:
+                    label = f"Reading {args.get('path', 'a file')}"
                 await on_status(label)
             convo.append({"role": "tool", "tool_call_id": c.id,
                           "content": await run_code_tool(session_id, c.function.name, args)})
