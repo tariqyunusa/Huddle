@@ -31,10 +31,10 @@ async def callback(installation_id: int, state: str, code: str | None = None,
         if payload.get("purpose") != "github_install":
             raise ValueError
     except Exception:
-        return RedirectResponse(f"{front}/settings?github=error")
+        return RedirectResponse(f"{front}/github=error")
     inst = await verify_installation(code, installation_id) if code else None
     if not inst:
-        return RedirectResponse(f"{front}/settings?github=error")
+        return RedirectResponse(f"{front}/github=error")
     row = db.query(GitHubInstallation).filter_by(
         user_id=payload["sub"], installation_id=installation_id).first()
     if row:
@@ -42,7 +42,7 @@ async def callback(installation_id: int, state: str, code: str | None = None,
     else:
         db.add(GitHubInstallation(id=uuid.uuid4(), user_id=payload["sub"], **inst))
     db.commit()
-    return RedirectResponse(f"{front}/settings?github=connected")
+    return RedirectResponse(f"{front}/?github=connected")
 
 @router.get("/repos")
 async def repos(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -55,3 +55,10 @@ async def repos(current_user: User = Depends(get_current_user), db: Session = De
             db.delete(inst)
     db.commit()
     return out
+
+
+@router.get("/installations")
+def installations(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rows = db.query(GitHubInstallation).filter_by(user_id=current_user.id).all()
+    return [{"installation_id": r.installation_id, "account": r.account_login,
+             "account_type": r.account_type, "selection": r.repository_selection} for r in rows]
