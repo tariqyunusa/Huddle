@@ -110,6 +110,7 @@ def list_repos(session_id: str, current_user: User = Depends(get_current_user),
     rows = db.query(Repo).filter_by(scope_type="session", scope_id=uuid.UUID(session_id)).all()
     return [{"id": str(r.id), "name": r.name, "status": r.status, "error": r.error,
              "file_count": r.file_count, "branch": r.branch,
+             "indexed": r.indexed_at is not None,
              "last_synced_at": r.last_synced_at} for r in rows]
 
 
