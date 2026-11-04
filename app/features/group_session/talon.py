@@ -3,10 +3,18 @@ Groq integration for group reasoning sessions — Brick 5 (swapped from Anthropi
 """
 import os
 from typing import List
+import json
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
+import logging; logger = logging.getLogger(__name__)
 
 from .models import GroupMessage, GroupDocument
+from app.features.connectors.github.code_tools import code_tools_for, CODE_TOOL_NAMES, ready_repos, run_code_tool
+
+
+MAX_HISTORY_MESSAGES = 20
+MIN_ANCHOR_LENGTH = 15  
+MAX_TOOL_STEPS = 6
 
 client = AsyncOpenAI(
     api_key=os.environ["GROQ_API_KEY"],
@@ -28,8 +36,7 @@ SYSTEM_PROMPT = (
     "current prices or figures, or the present state of something. Don't search "
     "for general knowledge, reasoning, or opinion questions you can already answer."
 )
-MAX_HISTORY_MESSAGES = 20
-MIN_ANCHOR_LENGTH = 15  
+
 
 DOCUMENT_TOOL = {
     "type": "function",
@@ -85,28 +92,6 @@ def build_transcript(messages: List[GroupMessage]) -> List[dict]:
             turns.append({"role": "assistant", "content": m.content})
     return turns
 
-DOCUMENT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "generate_document",
-        "description": (
-            "Generate a downloadable report or document summarizing the discussion. "
-            "Call this when a participant explicitly asks for a report, write-up, "
-            "summary document, or similar deliverable, OR when you judge that the "
-            "group has reached a natural conclusion that would benefit from being "
-            "captured as a document (e.g. a decision, a plan, a set of action items). "
-            "Do not call this for a normal conversational answer."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "A short title for the document."},
-                "instructions": {"type": "string", "description": "What the document should cover."},
-            },
-            "required": ["title", "instructions"],
-        },
-    },
-}
 
 def build_system_message(extra_system: str | None = None) -> str:
     if not extra_system:
@@ -155,28 +140,84 @@ def fit_chat_context_budget(
     return transcript, episodic_context, semantic_context, procedural_context
 
 
-async def generate_reply(messages: List[dict], extra_system: str | None = None) -> tuple[str | None, int, bool, dict | None]:
-    response = await client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        max_tokens=2000,
-        messages=[{"role": "system", "content": build_system_message(extra_system)}] + messages,
-        tools=[{"type": "browser_search"}, DOCUMENT_TOOL],
-        tool_choice="auto"
-    )
-    message = response.choices[0].message
-    tokens_used = response.usage.total_tokens if response.usage else 0
+async def generate_reply(messages, extra_system=None, session_id=None, on_status=None):
+    repos = ready_repos(session_id) if session_id else []
+    logger.info("code repos for %s: %s", session_id, [(r.name, r.status, bool(r.indexed_at)) for r in repos])
 
-    # Check if Talon decided to generate a document instead of replying normally
-    if message.tool_calls:
-        for call in message.tool_calls:
+    if repos:
+        tools = [DOCUMENT_TOOL] + code_tools_for(repos)
+    else:
+        tools = [{"type": "browser_search"}, DOCUMENT_TOOL]
+    tool_names = [t["function"]["name"] for t in tools if t.get("type") == "function"]
+
+    code_hint = None
+    if repos:
+        code_hint = ("Connected repositories: " + ", ".join(f"{r.name} ({r.file_count} files)" for r in repos)
+                     + ". To answer questions about the code, start with search_code to locate relevant code, "
+                       "then read_file for full context. Use list_files only to see the project layout. "
+                       "Don't guess file paths. Web search is not available in this session; "
+                       "use only the provided tools.")
+    system = build_system_message(extra_system)
+    if code_hint:
+        system += "\n\n" + code_hint
+    convo = [{"role": "system", "content": system}] + messages
+    tokens_used, searched, bad_calls = 0, False, 0
+
+    for _ in range(MAX_TOOL_STEPS):
+        try:
+            response = await client.chat.completions.create(
+                model="openai/gpt-oss-120b", max_tokens=2000,
+                messages=convo, tools=tools, tool_choice="auto")
+        except BadRequestError as e:
+            if "tool_use_failed" in str(e) and bad_calls < 2:
+                bad_calls += 1
+                logger.warning("Invalid tool call, retrying: %s", e)
+                convo.append({"role": "user", "content":
+                    "That tool call was invalid. The only tools available are: "
+                    + ", ".join(tool_names) + ". Call one of them, or answer directly."})
+                continue
+            raise
+        message = response.choices[0].message
+        tokens_used += response.usage.total_tokens if response.usage else 0
+        searched = searched or bool(getattr(message, "executed_tools", None))
+        calls = message.tool_calls or []
+
+        logger.info("Talon step: tool_calls=%s content=%r", [c.function.name for c in calls], (message.content or "")[:120])
+
+        for call in calls:
             if call.function.name == "generate_document":
-                import json
-                args = json.loads(call.function.arguments)
-                return None, tokens_used, False, args  # no text reply — doc request instead
+                return None, tokens_used, searched, json.loads(call.function.arguments)
 
-    executed_tools = getattr(message, "executed_tools", None)
-    searched = bool(executed_tools)
-    return message.content, tokens_used, searched, None
+        code_calls = [c for c in calls if c.function.name in CODE_TOOL_NAMES]
+        if not code_calls:
+            return message.content, tokens_used, searched, None
+
+        convo.append({"role": "assistant", "content": message.content or "",
+                      "tool_calls": [{"id": c.id, "type": "function",
+                                      "function": {"name": c.function.name,
+                                                   "arguments": c.function.arguments}}
+                                     for c in code_calls]})
+        for c in code_calls:
+            try:
+                args = json.loads(c.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            if on_status:
+                if c.function.name == "list_files":
+                    label = "Listing files"
+                elif c.function.name == "search_code":
+                    label = "Searching code"
+                else:
+                    label = f"Reading {args.get('path', 'a file')}"
+                await on_status(label)
+            convo.append({"role": "tool", "tool_call_id": c.id,
+                          "content": await run_code_tool(session_id, c.function.name, args)})
+
+    # out of steps: force a final answer with no tools
+    response = await client.chat.completions.create(
+        model="openai/gpt-oss-120b", max_tokens=2000, messages=convo)
+    tokens_used += response.usage.total_tokens if response.usage else 0
+    return response.choices[0].message.content, tokens_used, searched, None
 
 async def generate_title(first_message: str) -> str:
     response = await client.chat.completions.create(
