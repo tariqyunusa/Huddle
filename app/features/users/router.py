@@ -1,9 +1,10 @@
 from typing import List
 import uuid
 
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+import logging
 
 from app.db.session import get_db
 from app.features.users.jwt import create_access_token
@@ -24,6 +25,29 @@ from .tokens import generate_refresh_token, hash_token
 
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+def send_verification_email_safe(to_email: str, token: str, name: str) -> None:
+    try:
+        send_verification_email(to_email, token, name)
+    except Exception:
+        logger.exception("Background verification email failed.")
+
+def create_verification_token(user: User, db: Session) -> str:
+    verify_token = EmailVerificationToken(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(hours=24),
+    )
+    db.add(verify_token)
+    db.commit()
+    db.refresh(verify_token)
+    return verify_token.token
+
+
+def issue_verification_email(user: User, db: Session) -> None:
+    send_verification_email(user.email, create_verification_token(user, db), user.display_name)
 
 
 @router.get("/me", response_model=UserResponse)
@@ -47,29 +71,31 @@ def create_user(payload: CreateUserRequest, request:Request, db: Session = Depen
     db.commit()
     db.refresh(user)
     
-    verify_token = EmailVerificationToken(
-        id=uuid.uuid4(),
-        user_id=user.id,
-        expires_at=datetime.utcnow() + timedelta(hours=24) 
-    )
-    db.add(verify_token)
-    db.commit()
-    db.refresh(verify_token)
-    
     try:
-        send_verification_email(user.email, verify_token.token)
-    except Exception as e:
-        print(f"SIGNUP VERIFICATION EMAIL FAILED: {e}")
+        issue_verification_email(user, db)
+    except Exception:
+        logger.exception("signup verification email failed for user %s", user.id)
     return user
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, bg: BackgroundTasks, db: Session = Depends(get_db)):
     rate_limit("login-ip", client_ip(request), 20, 60)
     rate_limit("login-email", payload.email.lower(), 10, 900)
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-
+    
+    if not user.email_verified:
+        try:
+            rate_limit("login-verify-email", str(user.id), 1, 600)
+            token = create_verification_token(user, db)
+            bg.add_task(send_verification_email_safe, user.email, token, user.display_name)
+            
+        except HTTPException:
+            pass
+        except Exception:
+            logger.exception("Login verification email setup failed for user %s", user.id)
+            
     access_token = create_access_token(str(user.id))
     
     raw_refresh_token = generate_refresh_token()
@@ -117,18 +143,10 @@ def resend_verification(current_user: User = Depends(get_current_user), db: Sess
     if current_user.email_verified:
         return {"message": "Already verified"}
 
-    verify_token = EmailVerificationToken(
-        id=uuid.uuid4(),
-        user_id=current_user.id,
-        expires_at=datetime.utcnow() + timedelta(hours=24),
-    )
-    db.add(verify_token)
-    db.commit()
-    db.refresh(verify_token)
-
     try:
-        send_verification_email(current_user.email, verify_token.token)
+        issue_verification_email(current_user, db)
     except Exception:
+        logger.exception("Resend verification email failed for user %s", current_user.id)
         raise HTTPException(status_code=503, detail="Couldn't send verification email right now")
 
     return {"message": "Verification email sent"}
@@ -150,8 +168,8 @@ def forgot_password(payload: ForgotPasswordRequest, request: Request,  db: Sessi
         db.refresh(reset_token)
         try:
             send_password_reset_email(user.email, reset_token.token)
-        except Exception as e:
-            print(f"PASSWORD RESET EMAIL FAILED: {e}")
+        except Exception:
+            logger.exception("password reset email failed for user %s", user.id)
         
     return{"message": "if that email exists, a reset link has been sent."}
 
@@ -235,3 +253,4 @@ def logout(payload: RefreshRequest, db: Session = Depends(get_db)):
     db.query(RefreshToken).filter(RefreshToken.token == hash_token(payload.refresh_token)).update({"revoked": True})
     db.commit()
     return {"message": "Logged out"}
+

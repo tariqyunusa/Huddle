@@ -240,9 +240,9 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                 if not doc_content:
                     continue
                 
-            if len(doc_content) > 20_000:
-                await websocket.send_json({"type": "error", "content": "That document is too long to share"})
-                continue
+                if len(doc_content) > 20_000:
+                    await websocket.send_json({"type": "error", "content": "That document is too long to share"})
+                    continue
                 
                 db = SessionLocal()
                 try:
