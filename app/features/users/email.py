@@ -1,6 +1,9 @@
 import os
 import resend
+import logging
 from app.features.users.utils import build_verification_email_html
+logger = logging.getLogger(__name__)
+
 
 resend.api_key = os.environ["RESEND_API_KEY"]
 
@@ -48,4 +51,5 @@ def send_verification_email(to_email: str, token: str, name: str = "user"):
         "subject": "Verify your Huddle email",
         "html": build_verification_email_html(name=name, verify_link=verify_link),
     })
+    
     # merge to deploy
