@@ -7,6 +7,7 @@ import uuid
 import os
 import logging
 import unicodedata
+import re
 from urllib.parse import quote
 
 import redis.asyncio as aioredis
@@ -41,6 +42,8 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 LOCK_TIMEOUT_SECONDS = 90
+
+THUMB_RE = re.compile(r"^data:image/jpeg;base64,[A-Za-z0-9+/=]+$")
 
 
 @router.post("/sessions/{session_id}/invite-link")
@@ -243,6 +246,10 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                 if len(doc_content) > 20_000:
                     await websocket.send_json({"type": "error", "content": "That document is too long to share"})
                     continue
+                thumb = data.get("thumb")
+                if not (isinstance(thumb, str) and len(thumb) <= 60_000 and THUMB_RE.fullmatch(thumb)):
+                    thumb = None
+                kind = data.get("kind") if data.get("kind") in ("pdf", "text") else "text"
                 
                 db = SessionLocal()
                 try:
@@ -262,6 +269,8 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     "type": "document_shared",
                     "title": doc_title,
                     "shared_by": display_name,
+                    "kind": kind,
+                    "thumb": thumb,
                 })
                 continue
             
