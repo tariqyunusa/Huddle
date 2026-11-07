@@ -1,9 +1,12 @@
 from fastapi import Depends, HTTPException, Header
 from sqlalchemy.orm import Session
+import logging 
 
 from app.db.session import get_db
 from .jwt import decode_access_token
 from .models import User
+
+logger = logging.getLogger(__name__)
 
 def get_current_user(
     authorization: str = Header(None),
@@ -32,3 +35,4 @@ def get_verified_user(current_user: User = Depends(get_current_user)) -> User:
             detail="Please verify your email before creating or joining sessions.",
         )
     return current_user
+

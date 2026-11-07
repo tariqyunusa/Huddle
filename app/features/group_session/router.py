@@ -7,13 +7,14 @@ import uuid
 import os
 import logging
 import unicodedata
+import re
 from urllib.parse import quote
 
 import redis.asyncio as aioredis
 from redis.exceptions import LockNotOwnedError
 from openai import APIStatusError, AuthenticationError, RateLimitError
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 from typing import List
 from fastapi.responses import StreamingResponse
 
@@ -41,6 +42,8 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 LOCK_TIMEOUT_SECONDS = 90
+
+THUMB_RE = re.compile(r"^data:image/jpeg;base64,[A-Za-z0-9+/=]+$")
 
 
 @router.post("/sessions/{session_id}/invite-link")
@@ -214,18 +217,42 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
     # Replay history to the newly connected client
     db = SessionLocal()
     try:
-        history = (
+        messages = (
             db.query(GroupMessage)
             .filter(GroupMessage.session_id == session_id)
             .order_by(GroupMessage.created_at)
             .all()
         )
-        for msg in history:
-            await websocket.send_json({
-                "type": "message",
-                "author": msg.author_name,
-                "content": msg.content,
+        docs = (
+            db.query(GroupDocument)
+            .options(undefer(GroupDocument.thumb))
+            .filter(GroupDocument.session_id == session_id)
+            .all()
+        )
+        names = {}
+        if docs:
+            ids = list({d.added_by for d in docs if d.added_by})
+            names = {
+                u.id: u.display_name
+                for u in db.query(User.id, User.display_name).filter(User.id.in_(ids)).all()
+            }
+        events = [
+            (m.created_at, {"type": "message", "author": m.author_name, "content": m.content})
+            for m in messages
+        ]
+        events += [
+            (d.created_at, {
+                "type": "document_shared",
+                "title": d.title,
+                "shared_by": names.get(d.added_by, "Someone"),
+                "kind": d.kind or "text",
+                "thumb": d.thumb,
             })
+            for d in docs
+        ]
+        events.sort(key=lambda e: e[0])
+        for _, payload in events:
+            await websocket.send_json(payload)
     finally:
         db.close()
 
@@ -239,6 +266,14 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                 doc_content = data.get("content", "").strip()
                 if not doc_content:
                     continue
+                
+                if len(doc_content) > 20_000:
+                    await websocket.send_json({"type": "error", "content": "That document is too long to share"})
+                    continue
+                thumb = data.get("thumb")
+                if not (isinstance(thumb, str) and len(thumb) <= 60_000 and THUMB_RE.fullmatch(thumb)):
+                    thumb = None
+                kind = data.get("kind") if data.get("kind") in ("pdf", "text") else "text"
                 
                 db = SessionLocal()
                 try:
@@ -258,6 +293,8 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
                     "type": "document_shared",
                     "title": doc_title,
                     "shared_by": display_name,
+                    "kind": kind,
+                    "thumb": thumb,
                 })
                 continue
             
