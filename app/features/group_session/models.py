@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import Column, String, DateTime, Text, ForeignKey, Enum
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, deferred
 
 from app.db.base import Base
 
@@ -71,6 +71,8 @@ class GroupDocument(Base):
     title = Column(String, nullable=False)
     content = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    kind = Column(String, nullable=False, default="text", server_default="text")
+    thumb = deferred(Column(Text, nullable=True))
     
 class GeneratedDocument(Base):
     __tablename__ = "generated_documents"

@@ -14,7 +14,7 @@ import redis.asyncio as aioredis
 from redis.exceptions import LockNotOwnedError
 from openai import APIStatusError, AuthenticationError, RateLimitError
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 from typing import List
 from fastapi.responses import StreamingResponse
 
@@ -217,18 +217,42 @@ async def group_session_ws(websocket: WebSocket, session_id: str):
     # Replay history to the newly connected client
     db = SessionLocal()
     try:
-        history = (
+        messages = (
             db.query(GroupMessage)
             .filter(GroupMessage.session_id == session_id)
             .order_by(GroupMessage.created_at)
             .all()
         )
-        for msg in history:
-            await websocket.send_json({
-                "type": "message",
-                "author": msg.author_name,
-                "content": msg.content,
+        docs = (
+            db.query(GroupDocument)
+            .options(undefer(GroupDocument.thumb))
+            .filter(GroupDocument.session_id == session_id)
+            .all()
+        )
+        names = {}
+        if docs:
+            ids = list({d.added_by for d in docs if d.added_by})
+            names = {
+                u.id: u.display_name
+                for u in db.query(User.id, User.display_name).filter(User.id.in_(ids)).all()
+            }
+        events = [
+            (m.created_at, {"type": "message", "author": m.author_name, "content": m.content})
+            for m in messages
+        ]
+        events += [
+            (d.created_at, {
+                "type": "document_shared",
+                "title": d.title,
+                "shared_by": names.get(d.added_by, "Someone"),
+                "kind": d.kind or "text",
+                "thumb": d.thumb,
             })
+            for d in docs
+        ]
+        events.sort(key=lambda e: e[0])
+        for _, payload in events:
+            await websocket.send_json(payload)
     finally:
         db.close()
 
